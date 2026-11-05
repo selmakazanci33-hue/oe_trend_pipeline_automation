@@ -1,13 +1,14 @@
 """Opt-in local session diagnostics (SISENSE_DEBUG_SESSION=true).
 
 Logs only names and attributes: cookie names/domains/paths/flags and HTTP
-header names. Values of cookies, headers, tokens, and passwords are never read
-into log output.
+header names. Values of cookies, headers, tokens, and passwords are never
+written to log output.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -27,6 +28,13 @@ def _cookie_attributes(cookie: dict[str, Any]) -> str:
     )
 
 
+def cookie_names_from_header(cookie_header: str | None) -> list[str]:
+    """Names from a Cookie request header; values are discarded."""
+    if not cookie_header:
+        return []
+    return sorted({part.split("=", 1)[0].strip() for part in cookie_header.split(";") if part.strip()})
+
+
 def log_cookie_diagnostics(context: BrowserContext, url: str = VERIFIED_JAQL_URL) -> None:
     host = urlsplit(url).netloc
     all_cookies = context.cookies()
@@ -44,32 +52,87 @@ def log_cookie_diagnostics(context: BrowserContext, url: str = VERIFIED_JAQL_URL
         logger.info("[debug]   not sent to JAQL: %s", _cookie_attributes(cookie))
 
 
+@dataclass(frozen=True)
+class ObservedJaqlRequest:
+    header_names: frozenset[str]
+    cookie_names: tuple[str, ...]
+    status: int | None
+
+
 class BrowserJaqlObserver:
-    """Passively records header names of JAQL POSTs the dashboard itself sends."""
+    """Passively records the dashboard's own JAQL POSTs.
+
+    Event handlers only store Request references: in the sync API they run
+    inside Playwright's dispatcher, where blocking calls such as
+    ``Request.all_headers()`` cannot complete. Headers are read later, from
+    the main flow, via ``inspect()``.
+    """
+
+    MAX_INSPECTED = 10
 
     def __init__(self, url: str = VERIFIED_JAQL_URL):
         self._url = url
         self.request_count = 0
-        self.header_names: set[str] = set()
+        self._finished: list[Request] = []
+
+    @property
+    def finished_count(self) -> int:
+        return len(self._finished)
 
     def attach(self, context: BrowserContext) -> None:
         context.on("request", self._on_request)
+        context.on("requestfinished", self._on_request_finished)
+
+    def _matches(self, request: Request) -> bool:
+        return request.method == "POST" and request.url == self._url
 
     def _on_request(self, request: Request) -> None:
-        if request.method != "POST" or request.url != self._url:
-            return
-        self.request_count += 1
-        try:
-            names = request.all_headers().keys()
-        except Exception:
-            names = request.headers.keys()
-        self.header_names.update(name.lower() for name in names)
+        if self._matches(request):
+            self.request_count += 1
+
+    def _on_request_finished(self, request: Request) -> None:
+        if self._matches(request) and len(self._finished) < self.MAX_INSPECTED:
+            self._finished.append(request)
+
+    def inspect(self) -> list[ObservedJaqlRequest]:
+        observed: list[ObservedJaqlRequest] = []
+        for request in self._finished:
+            try:
+                headers = request.all_headers()
+            except Exception as exc:
+                logger.info("[debug] Could not read observed request headers: %s", type(exc).__name__)
+                continue
+            status = None
+            try:
+                response = request.response()
+                status = response.status if response is not None else None
+            except Exception as exc:
+                logger.info("[debug] Could not read observed response status: %s", type(exc).__name__)
+            observed.append(ObservedJaqlRequest(
+                header_names=frozenset(name.lower() for name in headers),
+                cookie_names=tuple(cookie_names_from_header(headers.get("cookie"))),
+                status=status,
+            ))
+        return observed
 
     def log_summary(self) -> None:
-        if not self.request_count:
-            logger.info("[debug] No dashboard JAQL POSTs were observed in this context")
-            return
         logger.info(
-            "[debug] Dashboard sent %d JAQL POST(s); header names: %s",
-            self.request_count, sorted(self.header_names),
+            "[debug] Dashboard sent %d JAQL POST(s); %d finished and kept for inspection",
+            self.request_count, self.finished_count,
         )
+        observed = self.inspect()
+        if not observed:
+            logger.info("[debug] No finished dashboard JAQL POSTs could be inspected")
+            return
+
+        statuses = sorted({str(o.status) for o in observed})
+        logger.info("[debug] Inspected %d dashboard JAQL POST(s); statuses: %s", len(observed), statuses)
+
+        successful = [o for o in observed if o.status == 200]
+        if successful:
+            common = frozenset.intersection(*(o.header_names for o in successful))
+            logger.info("[debug] Header names on every HTTP 200 dashboard JAQL POST: %s", sorted(common))
+            cookies = sorted(set.intersection(*(set(o.cookie_names) for o in successful)))
+            logger.info("[debug] Cookie names sent on every HTTP 200 dashboard JAQL POST: %s", cookies)
+        all_names = frozenset().union(*(o.header_names for o in observed))
+        logger.info("[debug] Header names seen on any dashboard JAQL POST: %s", sorted(all_names))

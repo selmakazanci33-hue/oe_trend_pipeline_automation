@@ -141,7 +141,10 @@ class FakeContext:
         raise AssertionError("auth headers must not be injected")
 
     def on(self, event, handler):
-        pass
+        self.handlers = getattr(self, "handlers", []) + [event]
+
+    def wait_for_event(self, event, predicate=None, timeout=None):
+        raise PlaywrightTimeoutError("Timeout")
 
     def close(self):
         self.closed = True
@@ -273,21 +276,132 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("gahixreports.getinsured.com", output)
         self.assertNotIn(COOKIE_SECRET, output)
 
-    def test_observer_records_header_names_only(self):
-        class Req:
-            method = "POST"
-            url = VERIFIED_JAQL_URL
 
-            def all_headers(self):
-                return {"Content-Type": "application/json", "Cookie": COOKIE_SECRET}
 
+HEADER_SECRET = "HEADER-VALUE-MUST-NOT-APPEAR"
+
+
+class ObservedRequest:
+    def __init__(self, headers, status=200, method="POST", url=VERIFIED_JAQL_URL, fail=False):
+        self.method = method
+        self.url = url
+        self._headers = headers
+        self._status = status
+        self._fail = fail
+        self.blocking_calls = 0
+
+    def all_headers(self):
+        self.blocking_calls += 1
+        if self._fail:
+            raise RuntimeError(f"boom {HEADER_SECRET}")
+        return dict(self._headers)
+
+    def response(self):
+        self.blocking_calls += 1
+        return type("Resp", (), {"status": self._status})()
+
+
+def browser_like_headers(**extra):
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "cookie": f"server.session={COOKIE_SECRET}; XSRF-TOKEN={COOKIE_SECRET}",
+        "origin": "https://gahixreports.getinsured.com",
+        "x-observed-header": HEADER_SECRET,
+    }
+    headers.update(extra)
+    return headers
+
+
+class ObserverTests(unittest.TestCase):
+    def observe(self, *requests):
         observer = BrowserJaqlObserver()
-        observer._on_request(Req())
+        for request in requests:
+            observer._on_request(request)
+            observer._on_request_finished(request)
+        return observer
+
+    def test_header_names_captured_and_lowercased(self):
+        observer = self.observe(ObservedRequest({"Content-Type": "application/json", "X-Observed-Header": "v"}))
+        observed = observer.inspect()
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0].header_names, frozenset({"content-type", "x-observed-header"}))
+        self.assertEqual(observed[0].status, 200)
+
+    def test_cookie_names_parsed_without_values(self):
+        observed = self.observe(ObservedRequest(browser_like_headers())).inspect()
+        self.assertEqual(observed[0].cookie_names, ("XSRF-TOKEN", "server.session"))
+        self.assertNotIn(COOKIE_SECRET, repr(observed))
+
+    def test_event_handlers_make_no_blocking_calls(self):
+        request = ObservedRequest(browser_like_headers())
+        observer = BrowserJaqlObserver()
+        observer._on_request(request)
+        observer._on_request_finished(request)
+        self.assertEqual(request.blocking_calls, 0)
+        self.assertEqual(observer.request_count, 1)
+        self.assertEqual(observer.finished_count, 1)
+
+    def test_only_verified_jaql_posts_are_kept(self):
+        observer = self.observe(
+            ObservedRequest({}, method="GET"),
+            ObservedRequest({}, url="https://gahixreports.getinsured.com/api/other"),
+        )
+        self.assertEqual(observer.request_count, 0)
+        self.assertEqual(observer.finished_count, 0)
+
+    def test_inspection_is_capped(self):
+        observer = self.observe(*[ObservedRequest({"a": "1"}) for _ in range(BrowserJaqlObserver.MAX_INSPECTED + 5)])
+        self.assertEqual(observer.request_count, BrowserJaqlObserver.MAX_INSPECTED + 5)
+        self.assertEqual(observer.finished_count, BrowserJaqlObserver.MAX_INSPECTED)
+
+    def test_summary_logs_names_never_values(self):
+        observer = self.observe(
+            ObservedRequest(browser_like_headers()),
+            ObservedRequest(browser_like_headers(**{"x-only-sometimes": HEADER_SECRET})),
+            ObservedRequest(browser_like_headers(), fail=True),
+        )
         with self.assertLogs("sisense.diagnostics", level="INFO") as logs:
             observer.log_summary()
         output = "\n".join(logs.output)
-        self.assertIn("cookie", output)
+        self.assertIn("x-observed-header", output)
+        self.assertIn("x-only-sometimes", output)
+        self.assertIn("XSRF-TOKEN", output)
+        self.assertIn("server.session", output)
+        self.assertIn("RuntimeError", output)
+        self.assertNotIn(HEADER_SECRET, output)
         self.assertNotIn(COOKIE_SECRET, output)
+
+    def test_summary_common_names_only_from_successful_requests(self):
+        observer = self.observe(
+            ObservedRequest(browser_like_headers(**{"x-common": "1"})),
+            ObservedRequest({"x-failed-only": "1"}, status=401),
+        )
+        with self.assertLogs("sisense.diagnostics", level="INFO") as logs:
+            observer.log_summary()
+        common_line = next(line for line in logs.output if "every HTTP 200" in line and "Header names" in line)
+        self.assertIn("x-common", common_line)
+        self.assertNotIn("x-failed-only", common_line)
+
+
+class ClientUnchangedTests(unittest.TestCase):
+    def test_client_post_arguments_unchanged(self):
+        context = FakeContext([FakeResponse(200, OK_BODY)])
+        client = SisenseJaqlClient(context, timeouts=Timeouts(), retry_policy=RetryPolicy(max_attempts=1))
+        client.execute(build_currently_enrolled_query())
+        call = context.request.calls[0]
+        self.assertEqual(
+            set(call) - {"url", "context_closed"},
+            {"data", "headers", "timeout", "fail_on_status_code", "max_redirects"},
+        )
+        self.assertEqual(call["headers"], {"Content-Type": "application/json", "Accept": "application/json"})
+
+    def test_no_csrf_or_xsrf_names_in_application_code(self):
+        sources = [p for p in PROJECT_ROOT.rglob("*.py") if ".venv" not in p.parts and "tests" not in p.parts]
+        self.assertTrue(sources)
+        for path in sources:
+            with self.subTest(path=path.name):
+                self.assertIsNone(re.search(r"[xc]srf", path.read_text(encoding="utf-8"), re.IGNORECASE))
 
 
 class SourceGuardTests(unittest.TestCase):

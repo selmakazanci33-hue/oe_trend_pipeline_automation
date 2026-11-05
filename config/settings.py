@@ -101,6 +101,7 @@ class Settings:
     manual_baseline: int = MANUAL_BASELINE_CURRENTLY_ENROLLED
     browser_channel: str = DEFAULT_BROWSER_CHANNEL
     debug_session: bool = False
+    diagnostics_only: bool = False
 
     @property
     def jaql_url(self) -> str:
@@ -249,4 +250,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         artifacts_dir=PROJECT_ROOT / "runtime" / "artifacts",
         browser_channel=browser_channel,
         debug_session=_env_bool("SISENSE_DEBUG_SESSION", False),
+        diagnostics_only=_env_bool("SISENSE_DIAGNOSTICS_ONLY", False),
     )

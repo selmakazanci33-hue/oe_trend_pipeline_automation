@@ -55,7 +55,8 @@ class SisenseAuthenticator:
         self._settings = settings
         self._password_prompt = password_prompt
         self._navigation_retry = RetryPolicy.from_settings(settings.retry)
-        self.jaql_observer = BrowserJaqlObserver() if settings.debug_session else None
+        observe = settings.debug_session or settings.diagnostics_only
+        self.jaql_observer = BrowserJaqlObserver() if observe else None
 
     def open_session(self) -> AuthenticatedSession:
         """Return a browser context that is verified to be on the target dashboard."""

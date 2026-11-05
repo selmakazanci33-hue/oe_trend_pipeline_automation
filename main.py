@@ -80,12 +80,12 @@ def retrieve_value(session: AuthenticatedSession, settings: Settings, query: Jaq
 def run_session_diagnostics(
     session: AuthenticatedSession, observer: BrowserJaqlObserver | None, settings: Settings
 ) -> None:
-    logger.info("[debug] JAQL will use the authenticated BrowserContext (reused saved state: %s)",
+    logger.info("[debug] Authenticated BrowserContext ready (reused saved state: %s)",
                 session.reused_saved_state)
-    if observer is not None and observer.request_count == 0:
+    if observer is not None and observer.finished_count == 0:
         try:
-            session.page.wait_for_event(
-                "request",
+            session.page.context.wait_for_event(
+                "requestfinished",
                 predicate=lambda r: r.method == "POST" and r.url == VERIFIED_JAQL_URL,
                 timeout=settings.timeouts.default,
             )
@@ -117,6 +117,10 @@ def main() -> int:
             authenticator = SisenseAuthenticator(playwright, settings)
             session = authenticator.open_session()
             try:
+                if settings.diagnostics_only:
+                    run_session_diagnostics(session, authenticator.jaql_observer, settings)
+                    logger.info("Diagnostics-only mode: no JAQL request was sent by this application")
+                    return EXIT_OK
                 if settings.debug_session:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
                 value = retrieve_value(session, settings, query)
