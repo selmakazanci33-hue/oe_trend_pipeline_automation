@@ -116,17 +116,22 @@ class SisenseJaqlClient:
         try:
             status = response.status
             text = response.text()
+            header_names = sorted(name.lower() for name in response.headers)
         finally:
             response.dispose()
 
         logger.info("HTTP %d (%.2f sec)", status, time.monotonic() - attempt_started)
+        if status != 200:
+            logger.info("Response header names: %s", header_names)
 
         if status == 200:
             return status, parse_json_body(text)
         if status in TRANSIENT_HTTP_STATUSES:
             raise TransientSisenseError(f"HTTP {status} from JAQL endpoint")
         if status == 401 or 300 <= status < 400:
-            raise AuthenticationError(f"HTTP {status}: JAQL request is not authenticated")
+            raise AuthenticationError(
+                f"HTTP {status}: JAQL request is not authenticated ({_error_summary(text)})"
+            )
         if status == 403:
             raise AuthorizationError("HTTP 403: account is not authorized for this JAQL query")
         if status == 400:

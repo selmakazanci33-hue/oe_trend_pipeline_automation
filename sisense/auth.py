@@ -17,6 +17,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from config.settings import MissingVerifiedInformation, Settings
 from sisense.browser import launch_browser
+from sisense.diagnostics import BrowserJaqlObserver
 from sisense.models import AuthenticationError
 from sisense.retry import RetryPolicy, run_with_retry
 
@@ -54,6 +55,7 @@ class SisenseAuthenticator:
         self._settings = settings
         self._password_prompt = password_prompt
         self._navigation_retry = RetryPolicy.from_settings(settings.retry)
+        self.jaql_observer = BrowserJaqlObserver() if settings.debug_session else None
 
     def open_session(self) -> AuthenticatedSession:
         """Return a browser context that is verified to be on the target dashboard."""
@@ -97,6 +99,8 @@ class SisenseAuthenticator:
             context = browser.new_context()
         context.set_default_timeout(self._settings.timeouts.default)
         context.set_default_navigation_timeout(self._settings.timeouts.slow)
+        if self.jaql_observer is not None:
+            self.jaql_observer.attach(context)
         return context
 
     # Locators -----------------------------------------------------------

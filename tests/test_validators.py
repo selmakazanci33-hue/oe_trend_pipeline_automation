@@ -246,6 +246,7 @@ class CurrentlyEnrolledPayloadTests(unittest.TestCase):
 class RawBodySentUnchangedTests(unittest.TestCase):
     class _Response:
         status = 200
+        headers = {"content-type": "application/json"}
 
         def text(self):
             return json.dumps({"values": cells(COUNT, PERCENT)})

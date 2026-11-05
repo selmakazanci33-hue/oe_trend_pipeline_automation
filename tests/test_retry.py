@@ -120,6 +120,7 @@ class FakeResponse:
     def __init__(self, status, text):
         self.status = status
         self._text = text
+        self.headers = {"content-type": "application/json"}
         self.disposed = False
 
     def text(self):

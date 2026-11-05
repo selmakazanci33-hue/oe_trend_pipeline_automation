@@ -8,18 +8,22 @@ import sys
 from datetime import datetime, timezone
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from config.settings import (
     SOURCE_LABEL,
     VERIFIED_DATASOURCE,
+    VERIFIED_JAQL_URL,
     ConfigurationError,
     MissingVerifiedInformation,
+    Settings,
     load_settings,
 )
-from sisense.auth import SisenseAuthenticator
+from sisense.auth import AuthenticatedSession, SisenseAuthenticator
 from sisense.client import SisenseJaqlClient
-from sisense.models import MetricResult, SisenseError, VerifiedJaqlPayloadRequired
+from sisense.diagnostics import BrowserJaqlObserver, log_cookie_diagnostics
+from sisense.models import JaqlQuery, MetricResult, SisenseError, VerifiedJaqlPayloadRequired
 from sisense.payloads.currently_enrolled import build_currently_enrolled_query
 from sisense.retry import RetryPolicy
 from validation.validators import extract_count_measure_value
@@ -62,6 +66,36 @@ def print_report(result: MetricResult, baseline: int, widget_title: str) -> None
     print(RULE)
 
 
+def retrieve_value(session: AuthenticatedSession, settings: Settings, query: JaqlQuery) -> int:
+    """Send the verified JAQL through the same BrowserContext that authenticated."""
+    client = SisenseJaqlClient(
+        session.context,
+        timeouts=settings.timeouts,
+        retry_policy=RetryPolicy.from_settings(settings.retry),
+    )
+    response = client.execute(query)
+    return extract_count_measure_value(response.body, query.body, query.primary_measure_title)
+
+
+def run_session_diagnostics(
+    session: AuthenticatedSession, observer: BrowserJaqlObserver | None, settings: Settings
+) -> None:
+    logger.info("[debug] JAQL will use the authenticated BrowserContext (reused saved state: %s)",
+                session.reused_saved_state)
+    if observer is not None and observer.request_count == 0:
+        try:
+            session.page.wait_for_event(
+                "request",
+                predicate=lambda r: r.method == "POST" and r.url == VERIFIED_JAQL_URL,
+                timeout=settings.timeouts.default,
+            )
+        except PlaywrightTimeoutError:
+            pass
+    if observer is not None:
+        observer.log_summary()
+    log_cookie_diagnostics(session.context)
+
+
 def main() -> int:
     configure_logging()
 
@@ -80,15 +114,12 @@ def main() -> int:
 
     try:
         with sync_playwright() as playwright:
-            session = SisenseAuthenticator(playwright, settings).open_session()
+            authenticator = SisenseAuthenticator(playwright, settings)
+            session = authenticator.open_session()
             try:
-                client = SisenseJaqlClient(
-                    session.context,
-                    timeouts=settings.timeouts,
-                    retry_policy=RetryPolicy.from_settings(settings.retry),
-                )
-                response = client.execute(query)
-                value = extract_count_measure_value(response.body, query.body, query.primary_measure_title)
+                if settings.debug_session:
+                    run_session_diagnostics(session, authenticator.jaql_observer, settings)
+                value = retrieve_value(session, settings, query)
             finally:
                 session.close()
     except MissingVerifiedInformation as exc:

@@ -100,6 +100,7 @@ class Settings:
     artifacts_dir: Path
     manual_baseline: int = MANUAL_BASELINE_CURRENTLY_ENROLLED
     browser_channel: str = DEFAULT_BROWSER_CHANNEL
+    debug_session: bool = False
 
     @property
     def jaql_url(self) -> str:
@@ -247,4 +248,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         storage_state_path=PROJECT_ROOT / "runtime" / "auth" / "sisense_state.json",
         artifacts_dir=PROJECT_ROOT / "runtime" / "artifacts",
         browser_channel=browser_channel,
+        debug_session=_env_bool("SISENSE_DEBUG_SESSION", False),
     )
