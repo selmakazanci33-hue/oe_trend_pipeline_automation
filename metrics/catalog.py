@@ -107,7 +107,8 @@ class ReportSection:
 SECTION_CURRENT_ENROLLMENT = "current_enrollment"
 SECTION_ENROLLMENT_METRICS = "enrollment_metrics"
 SECTION_ENROLLMENT_STATUS = "enrollment_status"
-SECTION_ENROLLMENT_STATUS_CHANGES = "enrollment_status_changes"
+SECTION_CANCELLATION_OVERVIEW = "cancellation_overview"
+SECTION_CANCELLATION_ACTIVITY = "cancellation_activity"
 SECTION_PLAN_DISTRIBUTION = "plan_distribution"
 
 REPORT_SECTIONS: tuple[ReportSection, ...] = (
@@ -115,9 +116,14 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     ReportSection(SECTION_ENROLLMENT_METRICS, "Enrollment Metrics"),
     ReportSection(SECTION_ENROLLMENT_STATUS, "Enrollment Status"),
     ReportSection(
-        SECTION_ENROLLMENT_STATUS_CHANGES,
-        "Enrollment Status Changes",
-        subtitle="Cancelled and Terminated — not the historical change in Currently Enrolled",
+        SECTION_CANCELLATION_OVERVIEW,
+        "Cancellation Overview",
+        subtitle="People-level cancellation populations — not interchangeable; not yet production-verified",
+    ),
+    ReportSection(
+        SECTION_CANCELLATION_ACTIVITY,
+        "Cancellation Activity",
+        subtitle="Daily policy series — not the Currently Enrolled snapshot trend; not yet production-verified",
     ),
     ReportSection(SECTION_PLAN_DISTRIBUTION, "Plan Distribution"),
 )
@@ -254,10 +260,13 @@ MODULES: tuple[Module, ...] = (
 )
 
 # Roadmap only: names from the existing business dashboard. No payloads, no queries.
+# Cancellation names are distinct business populations/series, not a generic "Cancelled".
 ROADMAP: tuple[RoadmapItem, ...] = (
     RoadmapItem("Total Applicants", "applications"),
-    RoadmapItem("Cancelled", "enrollment", section_id=SECTION_ENROLLMENT_STATUS_CHANGES),
-    RoadmapItem("Terminated", "enrollment", section_id=SECTION_ENROLLMENT_STATUS_CHANGES),
+    RoadmapItem("Enrolled & Cancelled", "enrollment", section_id=SECTION_CANCELLATION_OVERVIEW),
+    RoadmapItem("Cancelled — Not Enrolled", "enrollment", section_id=SECTION_CANCELLATION_OVERVIEW),
+    RoadmapItem("Cancelled Policies — Daily", "enrollment", section_id=SECTION_CANCELLATION_ACTIVITY),
+    RoadmapItem("Terminated Policies — Daily", "enrollment", section_id=SECTION_CANCELLATION_ACTIVITY),
     RoadmapItem("Metal Tier", "enrollment", section_id=SECTION_PLAN_DISTRIBUTION),
     RoadmapItem("FPL Level", "financial_assistance"),
     RoadmapItem("Financial Assistance", "financial_assistance"),
@@ -303,6 +312,8 @@ WAVE1_TARGETS: tuple[DiscoveryTarget, ...] = (
     DiscoveryTarget("new_enrolled", "New", "enrollment"),
     DiscoveryTarget("active_enrolled", "Active", "enrollment"),
     DiscoveryTarget("passive_enrolled", "Passive", "enrollment"),
+    # Presentation placeholders only. Production HTML no longer uses these generic
+    # labels; keep the ids so existing discovery/validation is not silently retargeted.
     DiscoveryTarget("cancelled", "Cancelled", "enrollment"),
     DiscoveryTarget("terminated", "Terminated", "enrollment"),
 )

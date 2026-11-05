@@ -14,8 +14,9 @@ from metrics.catalog import (
     MODULES,
     PERCENT_EFFECTUATED,
     ROADMAP,
+    SECTION_CANCELLATION_ACTIVITY,
+    SECTION_CANCELLATION_OVERVIEW,
     SECTION_ENROLLMENT_STATUS,
-    SECTION_ENROLLMENT_STATUS_CHANGES,
     SECTION_PLAN_DISTRIBUTION,
     roadmap_for,
 )
@@ -36,10 +37,11 @@ ENROLLMENT_HEADINGS = (
     "Current Enrollment",
     "Enrollment Metrics",
     "Enrollment Status",
-    "Enrollment Status Changes",
+    "Cancellation Overview",
+    "Cancellation Activity",
     "Plan Distribution",
     "Currently Enrolled — History &amp; Trends",
-    "Enrollment Trend",
+    "Currently Enrolled — Snapshot Trend",
     "Metric Definitions",
 )
 SIDEBAR = (
@@ -133,14 +135,18 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
 
     def test_cancelled_terminated_under_status_changes(self):
         self.full_run()
-        block = section(self.report_html(), SECTION_ENROLLMENT_STATUS_CHANGES)
-        self.assertIn("Enrollment Status Changes", block)
-        self.assertIn("Cancelled", block)
-        self.assertIn("Terminated", block)
-        self.assertNotIn("New", block)
-        self.assertNotIn("Metal Tier", block)
-        self.assertIn("not the historical change in Currently Enrolled", block)
-        self.assertNotIn("badge-source", block)
+        overview = section(self.report_html(), SECTION_CANCELLATION_OVERVIEW)
+        activity = section(self.report_html(), SECTION_CANCELLATION_ACTIVITY)
+        self.assertIn("Cancellation Overview", overview)
+        self.assertIn("Enrolled &amp; Cancelled", overview)
+        self.assertIn("Cancelled — Not Enrolled", overview)
+        self.assertNotIn("New", overview)
+        self.assertNotIn("Metal Tier", overview)
+        self.assertNotIn("badge-source", overview)
+        self.assertIn("Cancellation Activity", activity)
+        self.assertIn("Cancelled Policies — Daily", activity)
+        self.assertIn("Terminated Policies — Daily", activity)
+        self.assertNotIn("badge-source", activity)
 
     def test_metal_tier_under_plan_distribution(self):
         self.full_run()
@@ -205,7 +211,7 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
         self.assertNotIn("PENDING", self.card("percent_effectuated"))
         self.assertIn("SOURCE", self.card("percent_effectuated"))
         self.assertNotIn("PENDING", section(html, SECTION_ENROLLMENT_STATUS))
-        for section_id in (SECTION_ENROLLMENT_STATUS_CHANGES, SECTION_PLAN_DISTRIBUTION):
+        for section_id in (SECTION_CANCELLATION_OVERVIEW, SECTION_CANCELLATION_ACTIVITY, SECTION_PLAN_DISTRIBUTION):
             block = section(html, section_id)
             self.assertIn("PENDING", block)
             self.assertNotIn("badge-source", block)
@@ -247,7 +253,8 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
         self.assertEqual(CURRENTLY_ENROLLED.status, "active")
         self.assertEqual(PERCENT_EFFECTUATED.status, "active")
         pending_names = {item.name for item in ROADMAP}
-        for name in ("Total Applicants", "Cancelled", "Terminated", "Metal Tier"):
+        for name in ("Total Applicants", "Enrolled & Cancelled", "Cancelled — Not Enrolled",
+                     "Cancelled Policies — Daily", "Terminated Policies — Daily", "Metal Tier"):
             self.assertIn(name, pending_names)
         for name in ("Applications Started", "Submitted Applications", "New", "Active", "Passive"):
             self.assertNotIn(name, pending_names)

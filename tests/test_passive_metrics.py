@@ -112,7 +112,8 @@ class CatalogPromotionTests(unittest.TestCase):
 
     def test_roadmap_keeps_cancelled_terminated_metal_tier_pending(self):
         names = {i.name for i in ROADMAP}
-        self.assertTrue({"Cancelled", "Terminated", "Metal Tier"} <= names)
+        self.assertTrue({"Enrolled & Cancelled", "Cancelled — Not Enrolled", "Cancelled Policies — Daily",
+                         "Terminated Policies — Daily", "Metal Tier"} <= names)
         self.assertNotIn("% Effectuated", names)
         for item in ROADMAP:
             self.assertNotIn(item.name, {m.display_name for m in METRICS.values()})
@@ -339,7 +340,7 @@ class ObserverTests(unittest.TestCase):
 
 class SafetyTests(unittest.TestCase):
     SOURCES = ("metrics/passive_metrics.py", "metrics/catalog.py", "reporting/pipeline.py", "reporting/model.py",
-               "reporting/html_report.py", "reporting/formatting.py")
+               "reporting/html_report.py", "reporting/formatting.py", "reporting/series_semantics.py")
 
     def test_zero_http_capability(self):
         forbidden_modules = {"requests", "httpx", "urllib", "http", "socket", "aiohttp", "urllib3"}
@@ -360,7 +361,7 @@ class SafetyTests(unittest.TestCase):
                     "2510", "2,510", "35266", "35,266", "756009", "756,009", "793512", "793,512",
                     "791826", "791,826")
         for relative in (*self.SOURCES, "main.py", "metrics/runtime_validation.py", "metrics/fingerprint_evidence.py",
-                         "reporting/validation_report.py"):
+                         "reporting/validation_report.py", "reporting/series_semantics.py"):
             text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
             for literal in literals:
                 self.assertNotIn(literal, text, relative)

@@ -99,12 +99,18 @@ class Wave1PromotionTests(PassiveMetricsHarness):
         html = self.report_html()
         chips = self.pending_chips()
         self.assertIn("Total Applicants", chips)
-        self.assertIn("Cancelled", chips)
-        self.assertIn("Terminated", chips)
+        self.assertIn("Enrolled & Cancelled", chips)
+        self.assertIn("Cancelled — Not Enrolled", chips)
+        self.assertIn("Cancelled Policies — Daily", chips)
+        self.assertIn("Terminated Policies — Daily", chips)
+        self.assertNotIn("Cancelled", chips)
+        self.assertNotIn("Terminated", chips)
         self.assertIn("Metal Tier", chips)
         self.assertNotIn("data-metric=\"total_applicants\"", html)
         pending_names = {item.name for item in ROADMAP}
-        self.assertTrue({"Total Applicants", "Cancelled", "Terminated", "Metal Tier"} <= pending_names)
+        self.assertTrue({"Total Applicants", "Enrolled & Cancelled", "Cancelled — Not Enrolled",
+                         "Cancelled Policies — Daily", "Terminated Policies — Daily", "Metal Tier"}
+                        <= pending_names)
 
     def test_successful_current_values_render_source_live(self):
         self.live_run()

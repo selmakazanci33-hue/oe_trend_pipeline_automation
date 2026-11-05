@@ -38,6 +38,7 @@ from reporting.formatting import (
     fmt_time,
 )
 from reporting.model import DATA_LIVE, DATA_NOT_AVAILABLE, DATA_PARTIAL, DATA_STALE, MetricPanel, ReportModel
+from reporting.series_semantics import CURRENTLY_ENROLLED_SNAPSHOT_TREND
 
 LATEST_REPORT = Path("latest") / "index.html"
 
@@ -66,7 +67,7 @@ def _script_json(data: object) -> str:
 
 
 def chart_figure(model: ReportModel) -> dict:
-    """Plotly figure built strictly from observed points; returns no traces when there are none."""
+    """Currently Enrolled snapshot trend only. Never mixed with another business series."""
     points = model.analytics.points
     stored = [p for p in points if p.stored]
     unstored = [p for p in points if not p.stored]
@@ -183,9 +184,10 @@ def _kpi_section(model: ReportModel) -> str:
 
 def _trend_section(model: ReportModel, chart_id: str = "trend-chart-overview") -> str:
     empty_id = f"{chart_id}-empty"
-    return ('<section class="card" data-section="enrollment_trend"><div class="section-head"><h2>Enrollment Trend</h2>'
-            f'<span class="section-sub">{escape(model.metric.display_name)} — built only from stored validated '
-            'snapshots</span></div>'
+    series = CURRENTLY_ENROLLED_SNAPSHOT_TREND
+    return (f'<section class="card" data-section="enrollment_trend" data-series="{escape(series.metric_id or "")}">'
+            f'<div class="section-head"><h2>{escape(series.label)}</h2>'
+            f'<span class="section-sub">Stored validated observations over time</span></div>'
             f'<div id="{escape(chart_id)}" class="chart"></div><div id="{escape(empty_id)}" class="empty" hidden>'
             'No snapshot history yet. The trend appears after the first successful retrieval.</div></section>')
 

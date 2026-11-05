@@ -104,7 +104,8 @@ class ExecutiveReportConsistencyTests(PassiveMetricsHarness):
         html = self.report_html()
         text = visible(html)
         self.assertIn("Currently Enrolled People — derived from actual snapshot history only", text)
-        self.assertIn("Currently Enrolled People — built only from stored validated snapshots", text)
+        self.assertIn("Currently Enrolled — Snapshot Trend", text)
+        self.assertIn("Stored validated observations over time", text)
         self.assertIn("Currently Enrolled — History &amp; Trends", html)
         self.assertNotIn("Enrollment Movement", html)
         self.assertNotIn("Additional Enrollment Metrics", html)
@@ -113,7 +114,8 @@ class ExecutiveReportConsistencyTests(PassiveMetricsHarness):
     def test_pending_roadmap_is_catalog_driven_without_status_notes(self):
         self.full_run()
         chips = self.pending_chips()
-        for name in ("Total Applicants", "Cancelled", "Terminated", "Metal Tier"):
+        for name in ("Total Applicants", "Enrolled & Cancelled", "Cancelled — Not Enrolled",
+                     "Cancelled Policies — Daily", "Terminated Policies — Daily", "Metal Tier"):
             self.assertIn(name, chips)
         for name in ("Applications Started", "Submitted Applications", "New", "Active", "Passive"):
             self.assertNotIn(name, chips)

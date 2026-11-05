@@ -6,6 +6,7 @@ import secrets
 import shutil
 import sqlite3
 from datetime import timedelta
+from html import unescape
 from unittest import mock
 
 import main as app
@@ -50,8 +51,8 @@ class PassiveMetricsHarness(PipelineHarness):
         return match.group(1)
 
     def pending_chips(self):
-        return set(re.findall(r'<li><span>([^<]+)</span><span class="badge badge-none">PENDING</span></li>',
-                              self.report_html()))
+        return {unescape(name) for name in re.findall(
+            r'<li><span>([^<]+)</span><span class="badge badge-none">PENDING</span></li>', self.report_html())}
 
 
 class PassiveMetricsMainTests(PassiveMetricsHarness):
@@ -75,7 +76,8 @@ class PassiveMetricsMainTests(PassiveMetricsHarness):
         self.run_pipeline(812345, self.ce_widget())
         chips = self.pending_chips()
         self.assertNotIn("% Effectuated", chips)
-        for name in ("Cancelled", "Terminated", "Metal Tier", "Total Applicants"):
+        for name in ("Enrolled & Cancelled", "Cancelled — Not Enrolled", "Cancelled Policies — Daily",
+                     "Terminated Policies — Daily", "Metal Tier", "Total Applicants"):
             self.assertIn(name, chips)
         for name in ("New", "Active", "Passive", "Applications Started", "Submitted Applications"):
             self.assertNotIn(name, chips)

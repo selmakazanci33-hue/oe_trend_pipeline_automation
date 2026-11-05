@@ -83,7 +83,8 @@ class HtmlTests(unittest.TestCase):
         html = visible_html(live_model(series((26, 799_000), (1, 805_000), (0, 806_000))))
         for text in (
             "Georgia Access", "OE Executive Intelligence", "Plan Year 2027", "Last Successful Refresh",
-            "Data Source", "Pipeline Status", "CURRENTLY ENROLLED PEOPLE", "806,000", "Enrollment Trend",
+            "Data Source", "Pipeline Status", "CURRENTLY ENROLLED PEOPLE", "806,000",
+            "Currently Enrolled — Snapshot Trend",
             "Currently Enrolled — Recent Change", "Previous Snapshot Change", "Daily Change", "7-Day Change",
             "30-Day Change",
             "Data Freshness &amp; Quality", "Historical Snapshot Count", "PY 2027 - OE Executive Dashboard",
