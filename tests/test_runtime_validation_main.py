@@ -37,7 +37,7 @@ class RuntimeValidationMainTests(PipelineHarness):
                      "Passive VALUE_EXTRACTED 300,007",
                      "Cancelled PENDING",
                      "Terminated PENDING",
-                     "Currently Enrolled Control PASS"):
+                     "Currently Enrolled Control EXACT_VALUE_MATCH"):
             self.assertIn(line, lines)
         self.assertTrue((self.reports / "validation" / "wave1_runtime_validation.html").exists())
         self.assertTrue((self.reports / "discovery" / "wave1_metric_discovery.html").exists())
@@ -48,7 +48,10 @@ class RuntimeValidationMainTests(PipelineHarness):
     def test_control_mismatch_reported_and_application_authoritative(self):
         code, out, _, _ = self.run_validation(values={"ce": 699999})
         self.assertEqual(code, app.EXIT_OK)
-        self.assertIn("Currently Enrolled Control FAIL", [" ".join(line.split()) for line in out.splitlines()])
+        self.assertIn("Currently Enrolled Control LIVE_MOVEMENT",
+                      [" ".join(line.split()) for line in out.splitlines()])
+        self.assertIn("Currently Enrolled identity IDENTITY_PASS",
+                      [" ".join(line.split()) for line in out.splitlines()])
         self.assertEqual([s.metric_value for s in self.snapshots()], [700001])
 
     def test_discovered_values_never_enter_history(self):
@@ -81,7 +84,7 @@ class RuntimeValidationMainTests(PipelineHarness):
         self.assertEqual(len(posts), 1)
         self.assertEqual(self.snapshots(), [])
         control = self.validation_doc()["currently_enrolled_control"]
-        self.assertEqual((control["status"], control["application_value"]), ("FAIL", None))
+        self.assertEqual((control["status"], control["application_value"]), ("SOURCE_UNAVAILABLE", None))
 
     def test_validation_error_does_not_affect_production(self):
         with mock.patch.object(app, "validate_runtime_values", side_effect=RuntimeError("boom")):

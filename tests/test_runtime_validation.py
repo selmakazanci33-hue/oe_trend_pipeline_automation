@@ -248,10 +248,13 @@ class PendingAndControlTests(unittest.TestCase):
         _, observer = runtime_rows(*natural_wave1())
         passive, reason = passive_control_value(observer, EXPECTED)
         self.assertEqual((passive, reason), (700_001, None))
-        self.assertEqual(ControlComparison(passive, 700_001, None).status, "PASS")
+        matched = ControlComparison(passive, 700_001, None)
+        self.assertEqual(matched.status, "EXACT_VALUE_MATCH")
+        self.assertEqual(matched.identity_status, "IDENTITY_PASS")
         mismatch = ControlComparison(passive, 700_000, None)
-        self.assertEqual((mismatch.status, mismatch.difference), ("FAIL", 1))
-        self.assertEqual(ControlComparison(None, 700_001, "x").status, "FAIL")
+        self.assertEqual(mismatch.status, "LIVE_MOVEMENT")
+        self.assertEqual(mismatch.difference, -1)
+        self.assertEqual(ControlComparison(None, 700_001, "x").status, "SOURCE_UNAVAILABLE")
 
     def test_catalog_not_promoted(self):
         runtime_rows(*natural_wave1())
@@ -274,9 +277,9 @@ class ArtifactAndSafetyTests(unittest.TestCase):
             doc = (path.parent / "wave1_runtime_validation.json").read_text(encoding="utf-8")
         for text in ("400,002", "300,003", "500,004", "100,005", "200,006", "300,007", "97.00%",
                      "VALUE_EXTRACTED", "PENDING", "VALIDATION ONLY — awaiting verified filter fingerprint", "sha256:",
-                     "Passive Currently Enrolled", "700,001", "PASS"):
+                     "Passive Currently Enrolled", "700,001", "EXACT_VALUE_MATCH", "IDENTITY_PASS"):
             self.assertIn(text, html)
-        self.assertEqual(json.loads(doc)["currently_enrolled_control"]["status"], "PASS")
+        self.assertEqual(json.loads(doc)["currently_enrolled_control"]["status"], "EXACT_VALUE_MATCH")
         for forbidden in ("GUID-SENTINEL", FILTER_SENTINEL, "Count([", "formula", "xsrf", "cookie",
                           "x-tenant", "authorization", "server.session"):
             self.assertNotIn(forbidden.lower(), html.lower())

@@ -246,7 +246,7 @@ def _extract(metric: MetricDefinition, observer: SourceWidgetObserver) -> Passiv
 
 
 def apply_control(outcome: PassiveMetricOutcome, application_value: int | None) -> PassiveMetricOutcome:
-    """Canary: a source that also carries the verified application measure must agree with the application value."""
+    """Same-response canary: an embedded Currently Enrolled measure from this response must match exactly."""
     if not outcome.succeeded or outcome.control_value is None:
         return outcome
     if application_value is None:

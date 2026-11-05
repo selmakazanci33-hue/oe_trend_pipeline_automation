@@ -92,6 +92,12 @@ EXIT_MISSING_VERIFIED_INFO = 2
 RULE = "=" * 60
 DISCOVERY_QUIET_MS = 5000
 DISCOVERY_MAX_EVENTS = 500
+OBSERVATION_WINDOW_LINES = (
+    "Passive observation window is active.",
+    "Use the already-open dashboard normally to expose the widgets you want to validate.",
+    "No additional application JAQL requests will be generated.",
+    "Press ENTER in this terminal when natural dashboard observation is complete.",
+)
 logger = logging.getLogger("oe_trend_pipeline")
 
 
@@ -242,6 +248,8 @@ def main() -> int:
                         session, source_observer, settings.timeouts.slow, production_passive
                     )
                     passive_retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if discovery_observer is not None and settings.runtime_validation:
+                    await_operator_observation(session, discovery_observer, settings)
                 value = retrieve_value(session, settings, query, request_metadata)
             finally:
                 if discovery_observer is not None and discovery_outcome is None:
@@ -280,8 +288,13 @@ def main() -> int:
         print_passive_comparison(PassiveComparison(passive_observation, result.value))
     if discovery_outcome is not None:
         print_discovery_summary(discovery_outcome)
-    finish_runtime_validation(discovery_outcome, settings, result.value)
+    finish_runtime_validation(discovery_outcome, settings, result.value, result.retrieved_at)
 
+    # Snapshot persistence is unchanged in this phase. complete_success stores a
+    # successful application retrieval even when the passive Currently Enrolled
+    # read moved (LIVE_MOVEMENT). That is consistent: movement is not an identity
+    # failure. A structural IDENTITY_FAIL is reported on the validation artifact
+    # and does not block these snapshots. Do not treat that as a new gate.
     passive_values = passive_run_values(passive_outcomes, result, passive_retrieved_at, production_passive)
     if reporting is None:
         print_passive_metrics(passive_values, None)
@@ -439,6 +452,47 @@ def create_discovery_observer(settings: Settings, query: JaqlQuery) -> Discovery
     )
 
 
+def read_operator_completion() -> str:
+    """Block until the operator presses ENTER. Tests replace this; production does not."""
+    return input()
+
+
+def drain_inflight_dashboard_jaql(session: AuthenticatedSession, observer: DiscoveryObserver, timeouts) -> None:
+    """After ENTER, wait only for dashboard JAQL that is already finishing.
+
+    The budget does not grow when another request finishes, and silence is not
+    a second permission to close the window. ENTER already ended it.
+    """
+    budget_ms = min(DISCOVERY_QUIET_MS, timeouts.default)
+    deadline = time.monotonic() + budget_ms / 1000
+    for _ in range(DISCOVERY_MAX_EVENTS):
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        try:
+            session.context.wait_for_event(
+                "requestfinished", predicate=observer.is_target, timeout=remaining_ms,
+            )
+        except PlaywrightTimeoutError:
+            return
+
+
+def await_operator_observation(session: AuthenticatedSession, observer: DiscoveryObserver, settings: Settings) -> None:
+    """Keep the attached discovery observer open until the operator presses ENTER.
+
+    Called only after the initial dashboard load has gone quiet, and only for a
+    runtime-validation session. Does not scroll, click, navigate, or send a request.
+    Does not stop the observer.
+    """
+    if not settings.runtime_validation:
+        return
+    for line in OBSERVATION_WINDOW_LINES:
+        print(line, flush=True)
+        logger.info("%s", line)
+    read_operator_completion()
+    drain_inflight_dashboard_jaql(session, observer, settings.timeouts)
+
+
 def wait_for_dashboard_quiet(session: AuthenticatedSession, observer: DiscoveryObserver, timeouts) -> None:
     """Passively wait until no dashboard JAQL POST completes for a quiet period (bounded)."""
     quiet_ms = min(DISCOVERY_QUIET_MS, timeouts.default)
@@ -462,6 +516,7 @@ class RuntimeCapture:
     rows: tuple[RuntimeValue, ...]
     passive_control_value: int | None
     control_reason: str | None
+    passive_observed_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -539,24 +594,30 @@ def capture_runtime_values(
                   for status in (RV_VALUE_EXTRACTED, RV_SERIES_EXTRACTED, RV_NOT_AVAILABLE,
                                  RV_VALIDATION_FAILED, RV_PENDING)),
     )
-    return RuntimeCapture(rows, passive_value, reason)
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return RuntimeCapture(rows, passive_value, reason, observed_at)
 
 
 def finish_runtime_validation(
-    outcome: DiscoveryOutcome | None, settings: Settings, application_value: int | None
+    outcome: DiscoveryOutcome | None, settings: Settings, application_value: int | None,
+    application_observed_at: str | None = None,
 ) -> None:
     """Write the validation artifact and print the summary; never affects the production result."""
     if outcome is None or outcome.runtime is None:
         return
     capture = outcome.runtime
     reason = capture.control_reason or (None if application_value is not None else "Application request failed")
-    control = ControlComparison(capture.passive_control_value, application_value, reason)
+    control = ControlComparison(
+        capture.passive_control_value, application_value, reason,
+        passive_observed_at=capture.passive_observed_at,
+        application_observed_at=application_observed_at,
+    )
     now = datetime.now(timezone.utc)
     evidence = None
     try:
         log_path = settings.history_db_path.parent / OBSERVATIONS_FILE if settings.history_db_path else None
         evidence = collect_evidence(capture.rows, now.strftime("%Y-%m-%dT%H:%M:%SZ"), log_path,
-                                    control.status == "PASS")
+                                    control.identity_passed)
     except Exception as exc:
         logger.error("Could not collect promotion evidence: %s", type(exc).__name__)
     path = None
@@ -570,8 +631,17 @@ def finish_runtime_validation(
     print("Wave 1 runtime validation (developer review only — not stored, not in the executive report)")
     for row in capture.rows:
         value = format_runtime_value(row) if row.value is not None else ""
+        if row.metric_id == "cancelled_policies_daily" and row.status == RV_SERIES_EXTRACTED:
+            print("  Cancelled Policies — OBSERVED")
+            print(f"  {RV_SERIES_EXTRACTED}")
         print(f"  {row.label:<28}{row.status:<20}{value}")
+    print(f"  {'Currently Enrolled identity':<28}{control.identity_status}")
     print(f"  {'Currently Enrolled Control':<28}{control.status}")
+    if control.status == "LIVE_MOVEMENT":
+        print(f"  {'Passive read':<28}{control.passive_value} at {control.passive_observed_at}")
+        print(f"  {'Application read':<28}{control.application_value} at {control.application_observed_at}")
+        print(f"  {'Delta':<28}{control.delta:+d}")
+        print("  Application value remains authoritative")
     if evidence is not None:
         print("  Promotion evidence (validation-only candidates; nothing is promoted automatically)")
         for e in evidence.evidence:
@@ -596,7 +666,7 @@ def finish_runtime_validation(
     print(f"  Report: {path if path else 'not written'}")
     print()
     print(RULE)
-    logger.info("Currently Enrolled control: %s", control.status)
+    logger.info("Currently Enrolled control: %s (%s)", control.status, control.identity_status)
 
 
 def print_discovery_summary(outcome: DiscoveryOutcome) -> None:

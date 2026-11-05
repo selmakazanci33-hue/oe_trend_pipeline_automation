@@ -17,11 +17,16 @@ from metrics.cancellation_identification import CancellationSourceCandidate, can
 from metrics.catalog import VALUE_PERCENT
 from metrics.fingerprint_evidence import CandidateEvidence, EvidenceOutcome
 from metrics.runtime_validation import (
+    EXACT_VALUE_MATCH,
+    IDENTITY_FAIL,
+    IDENTITY_PASS,
+    LIVE_MOVEMENT,
     RV_NOT_AVAILABLE,
     RV_PENDING,
     RV_SERIES_EXTRACTED,
     RV_VALIDATION_FAILED,
     RV_VALUE_EXTRACTED,
+    SOURCE_UNAVAILABLE,
     ControlComparison,
     RuntimeValue,
 )
@@ -34,6 +39,8 @@ JSON_NAME = "wave1_runtime_validation.json"
 
 _STATUS_CLASS = {RV_VALUE_EXTRACTED: "ok", RV_SERIES_EXTRACTED: "ok", RV_NOT_AVAILABLE: "na",
                  RV_VALIDATION_FAILED: "fail", RV_PENDING: "pending"}
+_CONTROL_CLASS = {EXACT_VALUE_MATCH: "ok", IDENTITY_PASS: "ok", LIVE_MOVEMENT: "move",
+                  IDENTITY_FAIL: "fail", SOURCE_UNAVAILABLE: "pending"}
 
 
 def format_runtime_value(row: RuntimeValue) -> str:
@@ -261,10 +268,16 @@ def validation_document(
         ],
         "currently_enrolled_control": {
             "passive_value": control.passive_value,
+            "passive_observed_at": control.passive_observed_at,
             "application_value": control.application_value,
+            "application_observed_at": control.application_observed_at,
             "difference": control.difference,
+            "delta": control.delta,
+            "identity_status": control.identity_status,
             "status": control.status,
             "reason": control.reason,
+            "application_value_authoritative": control.authoritative_value,
+            "numeric_tolerance": None,
         },
     }
     if evidence is not None:
@@ -291,7 +304,10 @@ def render_validation_html(
         f"<td class=\"fp\">{_e(r.definition_fingerprint)}</td></tr>"
         for r in rows
     )
-    difference = control.difference
+    delta = control.delta
+    delta_text = "—" if delta is None else ("0" if delta == 0 else f"{delta:+,}")
+    identity_badge = _CONTROL_CLASS.get(control.identity_status or "", "pending")
+    result_badge = _CONTROL_CLASS.get(control.status, "pending")
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wave 1 Runtime Validation — Developer Review</title><style>{CSS}</style></head>
@@ -303,11 +319,19 @@ for comparison with the Sisense UI. Not stored in history; not shown in the exec
 <section class="card"><h2>Currently Enrolled control</h2>
 <table class="kv">
 <tr><th>Passive Currently Enrolled</th><td>{_e(_fmt_optional_int(control.passive_value))}</td></tr>
+<tr><th>Passive read time</th><td>{_e(control.passive_observed_at)}</td></tr>
 <tr><th>Application Currently Enrolled</th><td>{_e(_fmt_optional_int(control.application_value))}</td></tr>
-<tr><th>Difference</th><td>{_e('—' if difference is None else (f'{difference:+,}' if difference else '0'))}</td></tr>
-<tr><th>Result</th><td><span class="badge {'ok' if control.status == 'PASS' else 'fail'}">{_e(control.status)}</span>
+<tr><th>Application read time</th><td>{_e(control.application_observed_at)}</td></tr>
+<tr><th>Delta (application minus passive)</th><td>{_e(delta_text)}</td></tr>
+<tr><th>Identity</th><td><span class="badge {identity_badge}">{_e(control.identity_status)}</span></td></tr>
+<tr><th>Result</th><td><span class="badge {result_badge}">{_e(control.status)}</span>
 {f'<span class="muted">{_e(control.reason)}</span>' if control.reason else ''}</td></tr>
-</table></section>
+<tr><th>Authoritative value</th><td>{_e(_fmt_optional_int(control.authoritative_value))} (application retrieval)</td></tr>
+</table>
+<p class="muted">IDENTITY_PASS means the passive read matched the verified definition and parsed.
+LIVE_MOVEMENT means that read and the later application read both passed that identity and the integers differ.
+Movement is not an identity failure. No numeric tolerance is applied. EXACT_VALUE_MATCH means the two
+independently timed values happened to be equal. The application retrieval stays authoritative.</p></section>
 <section class="card"><h2>Wave 1 metrics</h2>
 <table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Shape</th><th>HTTP</th><th>Runtime Value</th>
 <th>Extraction Status</th><th>Production Status</th><th>Binding / Reason</th><th>Definition Fingerprint</th></tr></thead>
@@ -347,7 +371,8 @@ table{border-collapse:collapse;width:100%}.grid th,.grid td{text-align:left;padd
 vertical-align:top}.grid th{font-size:12px;text-transform:uppercase;color:#6b7c93}.num{font-variant-numeric:tabular-nums;font-weight:600}
 .kv th{width:260px;text-align:left;font-weight:600;padding:5px 8px 5px 0;color:#6b7c93}.kv td{padding:5px 0}
 .muted{color:#6b7c93;font-size:12px}.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
-.badge.ok{background:#dcfce7;color:#166534}.badge.na{background:#fef3c7;color:#92400e}.badge.fail{background:#fee2e2;color:#991b1b}
+.badge.ok{background:#dcfce7;color:#166534}.badge.move{background:#e0e7ff;color:#3730a3}
+.badge.na{background:#fef3c7;color:#92400e}.badge.fail{background:#fee2e2;color:#991b1b}
 .badge.pending{background:#f1f5f9;color:#475569}.fp{font-family:Consolas,Menlo,monospace;font-size:11px;word-break:break-all;
 max-width:220px}
 """

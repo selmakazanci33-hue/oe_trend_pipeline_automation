@@ -36,6 +36,7 @@ class PipelineHarness(unittest.TestCase):
         self.db = self.root / "data" / "oe.sqlite3"
         self.reports = self.root / "reports"
         self.secrets = RuntimeSecrets()
+        self.operator_prompts = []
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -62,9 +63,15 @@ class PipelineHarness(unittest.TestCase):
 
         FixedDatetime.moment = at
         printed = []
+
+        def operator_completed():
+            self.operator_prompts.append("enter")
+            return ""
+
         with mock.patch.object(app, "load_settings", return_value=settings), \
              mock.patch.object(app, "sync_playwright", fake_sync_playwright), \
              mock.patch.object(app, "datetime", FixedDatetime), \
+             mock.patch.object(app, "read_operator_completion", operator_completed), \
              mock.patch("sisense.auth.getpass.getpass", return_value="pw"), \
              mock.patch("sisense.retry.time.sleep", side_effect=AssertionError("no retry sleep")), \
              mock.patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))), \

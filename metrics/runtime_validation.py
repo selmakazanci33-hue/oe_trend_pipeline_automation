@@ -276,21 +276,75 @@ def validate_runtime_values(
     return tuple(rows)
 
 
+IDENTITY_PASS = "IDENTITY_PASS"
+IDENTITY_FAIL = "IDENTITY_FAIL"
+SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+LIVE_MOVEMENT = "LIVE_MOVEMENT"
+EXACT_VALUE_MATCH = "EXACT_VALUE_MATCH"
+
+
+def _classify_identity(passive_value: int | None, reason: str | None) -> str:
+    """Structural result of the passive read. Value equality is not part of it."""
+    if reason and reason.startswith("FAIL"):
+        return IDENTITY_FAIL
+    if isinstance(passive_value, int) and not isinstance(passive_value, bool):
+        return IDENTITY_PASS
+    return SOURCE_UNAVAILABLE
+
+
 @dataclass(frozen=True)
 class ControlComparison:
+    """Independently timed Currently Enrolled reads.
+
+    Identity is the verified dashboard, widget, datasource, measure, and filter
+    definition plus a successful parse. A later live value may differ. That
+    difference is movement, not an identity failure, and it is not judged by a
+    numeric tolerance.
+    """
+
     passive_value: int | None
     application_value: int | None
     reason: str | None
+    passive_observed_at: str | None = None
+    application_observed_at: str | None = None
+    identity_status: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.identity_status is None:
+            object.__setattr__(self, "identity_status", _classify_identity(self.passive_value, self.reason))
+
+    @property
+    def delta(self) -> int | None:
+        """Application minus passive. Positive means the later application read is higher."""
+        if not isinstance(self.passive_value, int) or isinstance(self.passive_value, bool):
+            return None
+        if not isinstance(self.application_value, int) or isinstance(self.application_value, bool):
+            return None
+        return self.application_value - self.passive_value
 
     @property
     def difference(self) -> int | None:
-        if self.passive_value is None or self.application_value is None:
-            return None
-        return self.passive_value - self.application_value
+        return self.delta
 
     @property
     def status(self) -> str:
-        return "PASS" if self.difference == 0 else "FAIL"
+        if self.identity_status != IDENTITY_PASS:
+            return self.identity_status or SOURCE_UNAVAILABLE
+        if self.delta is None:
+            return SOURCE_UNAVAILABLE
+        if self.passive_value == self.application_value:
+            return EXACT_VALUE_MATCH
+        return LIVE_MOVEMENT
+
+    @property
+    def identity_passed(self) -> bool:
+        """True for EXACT_VALUE_MATCH and LIVE_MOVEMENT. Movement is not a failure."""
+        return self.status in (EXACT_VALUE_MATCH, LIVE_MOVEMENT)
+
+    @property
+    def authoritative_value(self) -> int | None:
+        """The application retrieval. A moved passive read does not replace it."""
+        return self.application_value
 
 
 def passive_control_value(
