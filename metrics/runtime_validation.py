@@ -208,8 +208,7 @@ def validate_runtime_values(
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **common,
                                      reason=f"Verified widget failed its strict control check: {widget.control}"))
             continue
-        entry = observer.entry(widget.structure.widget_id)
-        request = entry.latest_request if entry else None
+        request = _definition_request(observer, widget)
         payload = _request_payload(request) if request is not None else None
         if payload is None:
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **common,
@@ -247,8 +246,7 @@ def validate_runtime_values(
                       widget_title=widget.structure.widget_title,
                       shape=widget.response.shape if widget.response else None,
                       http_status=widget.response.http_status if widget.response else None)
-        entry = observer.entry(widget.structure.widget_id)
-        request = entry.latest_request if entry else None
+        request = _definition_request(observer, widget)
         payload = _request_payload(request) if request is not None else None
         if payload is None:
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **common,
@@ -347,6 +345,18 @@ class ControlComparison:
         return self.application_value
 
 
+def _definition_request(observer: DiscoveryObserver, widget) -> Any:
+    """The retained request for this definition, not whatever the widget showed last."""
+    entry = observer.entry(widget.structure.widget_id)
+    if entry is None:
+        return None
+    if widget.definition_fingerprint:
+        definition = entry.definitions.get(widget.definition_fingerprint)
+        if definition is not None and definition.latest_request is not None:
+            return definition.latest_request
+    return entry.latest_request
+
+
 def passive_control_value(
     observer: DiscoveryObserver, expected: ExpectedWidgetQuery | None
 ) -> tuple[int | None, str | None]:
@@ -354,8 +364,16 @@ def passive_control_value(
     if expected is None:
         return None, "Verified definition unavailable"
     entry = observer.entry(expected.widget_id)
-    if entry is None or entry.latest_request is None:
+    definitions = list(entry.definitions.values()) if entry is not None else []
+    if not any(definition.latest_request is not None for definition in definitions):
         return None, "Verified widget not observed"
-    status, text = _read_response(entry.latest_request)
-    result, value = verified_widget_value(entry.latest_request, status, text, expected)
-    return value, None if result == CONTROL_PASS else result
+    failure = "Verified widget not observed"
+    for definition in sorted(definitions, key=lambda item: item.sequence, reverse=True):
+        if definition.latest_request is None:
+            continue
+        status, text = _read_response(definition.latest_request)
+        result, value = verified_widget_value(definition.latest_request, status, text, expected)
+        if result == CONTROL_PASS:
+            return value, None
+        failure = result
+    return None, failure

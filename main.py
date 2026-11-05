@@ -556,8 +556,8 @@ def finalize_discovery(
         counts = {state: sum(m.state == state for m in metrics)
                   for state in (STATE_VERIFIED, STATE_DISCOVERED, STATE_PENDING)}
         logger.info(
-            "Wave 1 discovery: %d dashboard JAQL POST(s), %d widget(s); %s",
-            result.target_requests_seen, len(result.widgets),
+            "Wave 1 discovery: %d dashboard JAQL POST(s), %d widget(s), %d definition(s); %s",
+            result.target_requests_seen, result.widget_count, result.definition_count,
             ", ".join(f"{state} {count}" for state, count in counts.items()),
         )
         path = None

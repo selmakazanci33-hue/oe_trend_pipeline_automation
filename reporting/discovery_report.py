@@ -33,7 +33,7 @@ _STATE_CLASS = {STATE_VERIFIED: "verified", STATE_DISCOVERED: "discovered", STAT
 _TARGET_LABELS = {normalize_label(t.label): t.label for t in DISCOVERY_TARGETS}
 
 
-def _widget_dict(widget: WidgetDiscovery) -> dict[str, Any]:
+def _widget_dict(widget: WidgetDiscovery, distinct_definitions: int) -> dict[str, Any]:
     s = widget.structure
     r = widget.response
     return {
@@ -42,10 +42,13 @@ def _widget_dict(widget: WidgetDiscovery) -> dict[str, Any]:
         "widget_type": s.widget_type,
         "datasource": s.datasource_title,
         "measures": [c.title for c in s.measures],
-        "dimensions": [{"title": c.title, "date": c.is_date} for c in s.dimensions],
+        "dimensions": [
+            {"title": c.title, "date": c.is_date, "table": c.table, "column": c.column} for c in s.dimensions
+        ],
         "filter_count": s.filter_count,
         "dashboard_filter_count": s.dashboard_filter_count,
         "observations": widget.observations,
+        "distinct_definitions": distinct_definitions,
         "structure_changed": widget.structure_changed,
         "matches": {label: list(sources) for label, sources in widget.matches.items()},
         "datasource_id": s.datasource_id,
@@ -107,8 +110,18 @@ def discovery_document(
         ],
         "widget_inventory": [safe_inventory_row(w) for w in result.widgets],
         "cancellation_source_identification": candidate_document(identify_cancellation_sources(result)),
-        "widgets": [_widget_dict(w) for w in result.widgets],
+        "widgets": [
+            _widget_dict(w, _definition_counts(result).get(w.structure.widget_id, 0)) for w in result.widgets
+        ],
     }
+
+
+def _definition_counts(result: DiscoveryResult) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for widget in result.widgets:
+        if widget.definition_fingerprint:
+            counts[widget.structure.widget_id] = counts.get(widget.structure.widget_id, 0) + 1
+    return counts
 
 
 def _e(value: Any) -> str:
@@ -139,12 +152,14 @@ def _summary_rows(metrics: tuple[MetricDiscovery, ...]) -> str:
     return "".join(rows)
 
 
-def _widget_card(widget: WidgetDiscovery, states: list[tuple[str, str]]) -> str:
+def _widget_card(widget: WidgetDiscovery, states: list[tuple[str, str]], distinct_definitions: int) -> str:
     s = widget.structure
     r = widget.response
     measures = "".join(f"<li>{_e(c.title)}</li>" for c in s.measures) or "<li>—</li>"
     dimensions = "".join(
-        f"<li>{_e(c.title)}{' <span class=muted>(date)</span>' if c.is_date else ''}</li>" for c in s.dimensions
+        f"<li>{_e(c.title)}{' <span class=muted>(date)</span>' if c.is_date else ''}"
+        f"{(' <span class=muted>' + _e(f'{c.table}.{c.column}') + '</span>') if c.table and c.column else ''}</li>"
+        for c in s.dimensions
     ) or "<li>—</li>"
     matches = "".join(
         f"<li>{_e(_TARGET_LABELS.get(key, key))} <span class=\"muted\">via {_e(', '.join(sources))}</span></li>"
@@ -155,7 +170,9 @@ def _widget_card(widget: WidgetDiscovery, states: list[tuple[str, str]]) -> str:
         ("Type", _e(s.widget_type)),
         ("Datasource", _e(s.datasource_title)),
         ("Filters", f"{s.filter_count} filters ({s.dashboard_filter_count} dashboard-level)"),
-        ("Observations", f"{widget.observations}{' (structure changed between observations)' if widget.structure_changed else ''}"),
+        ("Distinct definitions", str(distinct_definitions)),
+        ("Observations", str(widget.observations)),
+        ("Definition fingerprint", _e(widget.definition_fingerprint)),
         ("HTTP", _e(r.http_status if r else None)),
         ("Response Available", "Yes" if r and r.available else ("No" if r else "Not inspected")),
         ("Response Shape", _e(r.shape if r else None)),
@@ -185,9 +202,13 @@ def render_discovery_html(
     for m in metrics:
         for w in m.widgets:
             by_widget.setdefault(w.structure.widget_id, []).append((m.label, m.state))
+    definition_counts = _definition_counts(result)
     relevant = [w for w in result.widgets if w.structure.widget_id in by_widget]
     others = [w for w in result.widgets if w.structure.widget_id not in by_widget]
-    cards = "".join(_widget_card(w, by_widget[w.structure.widget_id]) for w in relevant) or (
+    cards = "".join(
+        _widget_card(w, by_widget[w.structure.widget_id], definition_counts.get(w.structure.widget_id, 0))
+        for w in relevant
+    ) or (
         '<p class="muted">No dashboard widget carried an exact Wave 1 label.</p>')
     identification = identify_cancellation_sources(result)
     identification_rows = "".join(
@@ -204,10 +225,11 @@ def render_discovery_html(
         f"<td>{w.structure.metadata_item_count}</td>"
         f"<td>{_e(', '.join(f'{role.panel}:{role.kind}' for role in w.structure.metadata_roles))}</td>"
         f"<td>{_e(' | '.join(c.title or '—' for c in w.structure.measures))}</td>"
-        f"<td>{_e(' | '.join(c.title or '—' for c in w.structure.dimensions))}</td>"
+        f"<td>{_e(' | '.join((c.column or c.title or '—') for c in w.structure.dimensions))}</td>"
         f"<td>{_e(w.structure.date_grain)}</td>"
         f"<td>{_e(None if w.response is None else w.response.shape)}</td>"
         f"<td>{_e(None if w.response is None else w.response.http_status)}</td>"
+        f"<td>{w.observations}</td>"
         f"<td class=\"fp\">{_e(w.definition_fingerprint)}</td></tr>"
         for w in result.widgets
     )
@@ -227,7 +249,9 @@ def render_discovery_html(
 <p>Generated {_e(fmt_time(generated_at))} from the dashboard's own JAQL requests only.
 Structure only: no metric values, filter values, payloads or credentials.</p>
 <div class="stats"><span>{result.target_requests_seen} JAQL POSTs observed</span>
-<span>{len(result.widgets)} dashboard widgets</span><span>{result.out_of_scope} out of scope</span>
+<span>{result.widget_count} dashboard widgets</span>
+<span>{result.definition_count} distinct definitions</span>
+<span>{result.out_of_scope} out of scope</span>
 <span>{_state_badge(STATE_VERIFIED)} {counts[STATE_VERIFIED]}</span>
 <span>{_state_badge(STATE_DISCOVERED)} {counts[STATE_DISCOVERED]}</span>
 <span>{_state_badge(STATE_PENDING)} {counts[STATE_PENDING]}</span></div></header>
@@ -241,8 +265,8 @@ Structure only: no metric values, filter values, payloads or credentials.</p>
 Display labels are not assumed to equal JAQL measure titles. This inventory does not promote a metric.</p>
 <table class="grid"><thead><tr><th>Widget</th><th>Datasource</th><th>Metadata items</th><th>Roles</th>
 <th>Measure titles</th><th>Dimension titles</th><th>Date grain</th><th>Shape</th><th>HTTP</th>
-<th>Definition Fingerprint</th></tr></thead>
-<tbody>{inventory_rows or '<tr><td colspan="10" class="muted">None</td></tr>'}</tbody></table></section>
+<th>Observations</th><th>Definition Fingerprint</th></tr></thead>
+<tbody>{inventory_rows or '<tr><td colspan="11" class="muted">None</td></tr>'}</tbody></table></section>
 <section class="card"><h2>Cancellation Source Identification</h2>
 <p class="muted">Structural nomination for human review only. STRUCTURAL_CANDIDATE is not VERIFIED.
 Exact production binding remains strict and is unchanged.</p>

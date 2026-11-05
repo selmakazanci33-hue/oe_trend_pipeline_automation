@@ -11,7 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from metrics.catalog import (
+    CANCELLATION_CANDIDATES,
     DISCOVERY_TARGETS,
+    GRAIN_DAYS,
     STATE_DISCOVERED,
     STATE_PENDING,
     STATE_VERIFIED,
@@ -57,7 +59,11 @@ def _verified(target: DiscoveryTarget, matched: list[WidgetDiscovery]) -> Metric
                                "Verified catalog metric; its verified widget was not observed in this run",
                                "NOT OBSERVED")
     ids = {w.structure.widget_id for w in matched}
-    widgets = (matched[0],) if len(ids) == 1 else tuple(matched)
+    if len(ids) == 1:
+        passing = [w for w in matched if w.control == CONTROL_PASS]
+        widgets = (passing[0] if passing else _choose_definition(matched),)
+    else:
+        widgets = tuple(matched)
     widget = widgets[0] if len(widgets) == 1 else None
     control = widget.control if widget is not None else None
     if control is None:
@@ -69,6 +75,28 @@ def _verified(target: DiscoveryTarget, matched: list[WidgetDiscovery]) -> Metric
     sources = tuple(s for w in widgets for s in w.matches.get(key, ()))
     return MetricDiscovery(target.metric_id, target.label, target.module_id, STATE_VERIFIED, widgets, sources,
                            reason, control)
+
+
+def _choose_definition(matched: list[WidgetDiscovery], target: DiscoveryTarget | None = None) -> WidgetDiscovery:
+    """Pick one retained definition of a single widget. Exact title match already applied.
+
+    A daily candidate with an observed date column prefers that column and grain
+    over another retained definition of the same widget that only shares the title.
+    """
+    usable = [widget for widget in matched
+              if widget.response is not None and widget.response.shape not in _UNUSABLE_SHAPES]
+    pool = usable or list(matched)
+    candidate = CANCELLATION_CANDIDATES.get(target.metric_id) if target is not None else None
+    if candidate is not None and candidate.source_date_column:
+        exact = []
+        for widget in pool:
+            dates = [column for column in widget.structure.dimensions if column.is_date]
+            if (len(dates) == 1 and dates[0].table == candidate.source_table
+                    and dates[0].column == candidate.source_date_column and dates[0].level == GRAIN_DAYS):
+                exact.append(widget)
+        if exact:
+            return exact[0]
+    return pool[0]
 
 
 def resolve_targets(
@@ -92,7 +120,7 @@ def resolve_targets(
         elif len({w.structure.widget_id for w in matched}) > 1:
             resolved.append(pending(f"Ambiguous: exact label found in {len(matched)} widgets"))
         else:
-            widget = matched[0]
+            widget = _choose_definition(matched, target)
             response = widget.response
             if response is None:
                 resolved.append(pending("Matched widget's response was not inspected (retention limit)"))

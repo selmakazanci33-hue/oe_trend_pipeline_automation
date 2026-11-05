@@ -101,10 +101,12 @@ def safe_inventory_row(widget: WidgetDiscovery) -> dict[str, Any]:
         ],
         "measure_titles": [c.title for c in s.measures],
         "dimension_titles": [c.title for c in s.dimensions],
+        "dimension_columns": [c.column for c in s.dimensions],
         "has_date_dimension": any(c.is_date for c in s.dimensions),
         "date_grain": s.date_grain,
         "response_shape": None if r is None else r.shape,
         "http_status": None if r is None else r.http_status,
+        "observations": widget.observations,
         "definition_fingerprint": widget.definition_fingerprint,
     }
 

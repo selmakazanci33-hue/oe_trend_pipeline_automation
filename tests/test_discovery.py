@@ -113,7 +113,9 @@ class BoundingTests(unittest.TestCase):
                                           filters=4), [cell(1)])
         (entry,) = observe(a, b).entries()
         self.assertTrue(entry.structure_changed)
+        self.assertEqual(len(entry.definitions), 2)
         self.assertEqual(entry.structure.filter_count, 4)
+        self.assertEqual(sorted(item.structure.filter_count for item in entry.definitions.values()), [3, 4])
 
     def test_in_scope_widgets_retained_for_inventory(self):
         (entry,) = observe(single("w9", "Average Age")).entries()

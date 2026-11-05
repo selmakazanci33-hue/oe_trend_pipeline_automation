@@ -3,9 +3,11 @@
 Scope: completed POSTs to the verified JAQL URL in the attached context whose
 body names the target dashboard and datasource. Request bodies (already held
 by Playwright) are reduced to safe structural metadata as each request
-completes; raw bodies are never retained, logged or persisted. A bounded
-number of Request references is kept so responses the browser already
-received can be inspected later, in memory, from the main flow.
+completes; raw bodies are never retained, logged or persisted. Each widget
+keeps one request per distinct definition fingerprint. A repeated fingerprint
+updates only that definition. A bounded number of Request references is kept
+so responses the browser already received can be inspected later, in memory,
+from the main flow.
 
 Nothing here sends a request.
 """
@@ -13,7 +15,7 @@ Nothing here sends a request.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from playwright.sync_api import BrowserContext, Request
@@ -180,12 +182,42 @@ def title_matches(structure: WidgetStructure, targets: Iterable[str]) -> dict[st
 
 
 @dataclass
-class _WidgetEntry:
+class _DefinitionRetention:
+    """One distinct metric definition for a widget. Repeats update only this record."""
+
+    fingerprint: str
     structure: WidgetStructure
     observations: int = 0
-    structure_changed: bool = False
     latest_request: Request | None = None
+    sequence: int = 0
+
+
+@dataclass
+class _WidgetEntry:
+    """Widget identity plus every distinct definition observed for it.
+
+    The key is widget id + definition fingerprint. A later request replaces only
+    the record with the same fingerprint. Returning to an earlier definition
+    does not delete the others.
+    """
+
+    structure: WidgetStructure
+    definitions: dict[str, _DefinitionRetention] = field(default_factory=dict)
     retention_skipped: bool = False
+
+    @property
+    def observations(self) -> int:
+        return sum(item.observations for item in self.definitions.values())
+
+    @property
+    def structure_changed(self) -> bool:
+        return len(self.definitions) > 1
+
+    @property
+    def latest_request(self) -> Request | None:
+        if not self.definitions:
+            return None
+        return max(self.definitions.values(), key=lambda item: item.sequence).latest_request
 
 
 class DiscoveryObserver:
@@ -212,6 +244,7 @@ class DiscoveryObserver:
         self.out_of_scope = 0
         self.widgets_dropped = 0
         self._closed = False
+        self._sequence = 0
 
     def attach(self, context: BrowserContext) -> None:
         self._context = context
@@ -220,6 +253,7 @@ class DiscoveryObserver:
         self.target_requests_seen = 0
         self.out_of_scope = 0
         self.widgets_dropped = 0
+        self._sequence = 0
 
         def on_request_finished(request: Request) -> None:
             if context is self._context:
@@ -237,7 +271,14 @@ class DiscoveryObserver:
 
     @property
     def retained_count(self) -> int:
-        return sum(entry.latest_request is not None for entry in self._widgets.values())
+        return sum(len(entry.definitions) for entry in self._widgets.values())
+
+    def _is_retained(self, request: Request) -> bool:
+        return any(
+            definition.latest_request is request
+            for entry in self._widgets.values()
+            for definition in entry.definitions.values()
+        )
 
     def _relevant(self, structure: WidgetStructure) -> bool:
         """Retain every in-scope widget so discovery can inventory structure without extra HTTP.
@@ -252,10 +293,11 @@ class DiscoveryObserver:
             return
         if not self.is_target(request):
             return
-        if any(entry.latest_request is request for entry in self._widgets.values()):
+        if self._is_retained(request):
             return
         self.target_requests_seen += 1
-        structure = widget_structure(_request_payload(request))
+        payload = _request_payload(request)
+        structure = widget_structure(payload)
         if (structure is None or structure.dashboard_id != self._dashboard_id
                 or structure.datasource_id != self._datasource_id):
             self.out_of_scope += 1
@@ -266,16 +308,21 @@ class DiscoveryObserver:
                 self.widgets_dropped += 1
                 return
             entry = self._widgets[structure.widget_id] = _WidgetEntry(structure)
-        elif entry.structure != structure:
-            entry.structure_changed = True
-            entry.structure = structure
-        entry.observations += 1
         if not self._relevant(structure):
             return
-        if entry.latest_request is None and self.retained_count >= self._max_retained:
+        fingerprint = definition_fingerprint(payload)
+        definition = entry.definitions.get(fingerprint)
+        if definition is None and self.retained_count >= self._max_retained:
             entry.retention_skipped = True
             return
-        entry.latest_request = request  # latest completed observation of this widget
+        if definition is None:
+            definition = entry.definitions[fingerprint] = _DefinitionRetention(fingerprint, structure)
+        self._sequence += 1
+        definition.observations += 1
+        definition.sequence = self._sequence
+        definition.structure = structure
+        definition.latest_request = request
+        entry.structure = structure
 
     def entries(self) -> list[_WidgetEntry]:
         return list(self._widgets.values())
@@ -382,6 +429,14 @@ class DiscoveryResult:
     widgets_dropped: int
     retention_skipped: int = 0
 
+    @property
+    def widget_count(self) -> int:
+        return len({widget.structure.widget_id for widget in self.widgets})
+
+    @property
+    def definition_count(self) -> int:
+        return sum(1 for widget in self.widgets if widget.definition_fingerprint)
+
 
 def _read_response(request: Request) -> tuple[int | None, str | None]:
     """(status, body text) of the response the browser already received; body only for HTTP 200."""
@@ -424,23 +479,29 @@ def _control_check(request: Request, status: int | None, text: str | None, expec
 
 
 def evaluate_discovery(observer: DiscoveryObserver, expected: ExpectedWidgetQuery | None) -> DiscoveryResult:
-    """Inspect retained responses in memory (main flow only; driver reads, no network)."""
+    """Inspect every retained definition in memory (main flow only; driver reads, no network)."""
     widgets = []
     for entry in observer.entries():
-        matches = title_matches(entry.structure, observer.target_labels)
-        response = None
-        control = None
-        fingerprint = None
-        if entry.latest_request is not None:
-            payload = _request_payload(entry.latest_request)
-            if payload is not None:
-                fingerprint = definition_fingerprint(payload)
-            status, text = _read_response(entry.latest_request)
-            response = summarize_response(status, text, entry.structure, observer.target_labels)
-            if expected is not None and entry.structure.widget_id == expected.widget_id:
-                control = _control_check(entry.latest_request, status, text, expected)
-        widgets.append(WidgetDiscovery(entry.structure, entry.observations, entry.structure_changed,
-                                       matches, response, control, fingerprint))
+        if not entry.definitions:
+            matches = title_matches(entry.structure, observer.target_labels)
+            widgets.append(WidgetDiscovery(entry.structure, 0, False, matches, None, None, None))
+            continue
+        multiple = len(entry.definitions) > 1
+        for definition in entry.definitions.values():
+            matches = title_matches(definition.structure, observer.target_labels)
+            response = None
+            control = None
+            if definition.latest_request is not None:
+                status, text = _read_response(definition.latest_request)
+                response = summarize_response(
+                    status, text, definition.structure, observer.target_labels,
+                )
+                if expected is not None and definition.structure.widget_id == expected.widget_id:
+                    control = _control_check(definition.latest_request, status, text, expected)
+            widgets.append(WidgetDiscovery(
+                definition.structure, definition.observations, multiple, matches, response, control,
+                definition.fingerprint,
+            ))
     return DiscoveryResult(
         widgets=tuple(widgets),
         target_requests_seen=observer.target_requests_seen,
