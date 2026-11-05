@@ -45,11 +45,54 @@ class CancellationSourceCandidate:
     semantic_role: str
     confidence: str
     reason: str
+    column_titles: tuple[str, ...] = ()
+    context_fields: tuple[str, ...] = ()
 
 
 def _haystack(widget: WidgetDiscovery) -> str:
-    parts = [widget.structure.widget_title, *(c.title for c in widget.structure.columns)]
+    parts = [widget.structure.widget_title]
+    for column in widget.structure.columns:
+        parts.extend((column.title, column.column_title))
+    for role in widget.structure.metadata_roles:
+        parts.append(role.column_title)
     return " ".join(normalize_label(part) or "" for part in parts)
+
+
+def _label_index(widget: WidgetDiscovery) -> dict[str, tuple[str, ...]]:
+    """Exact labels from ``jaql.title`` and ``columnTitle`` only.
+
+    Physical column names, including ``enrollment_status_description``, are not labels.
+    """
+    found: dict[str, list[str]] = {}
+
+    def add(text: str | None, source: str) -> None:
+        key = normalize_label(text)
+        if key and source not in found.setdefault(key, []):
+            found[key].append(source)
+
+    for column in widget.structure.measures:
+        add(column.title, "measure title")
+    for role in widget.structure.metadata_roles:
+        add(role.column_title, "columnTitle")
+    return {key: tuple(sources) for key, sources in found.items()}
+
+
+def _context_tokens(widget: WidgetDiscovery) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for role in widget.structure.metadata_roles:
+        for field in role.context_fields:
+            token = ".".join(part for part in (field.table, field.column) if part)
+            if token and token not in tokens:
+                tokens.append(token)
+    return tuple(tokens)
+
+
+def _column_titles(widget: WidgetDiscovery) -> tuple[str, ...]:
+    titles: list[str] = []
+    for role in widget.structure.metadata_roles:
+        if role.column_title and role.column_title not in titles:
+            titles.append(role.column_title)
+    return tuple(titles)
 
 
 def _has_hint(text: str, hints: tuple[str, ...]) -> bool:
@@ -70,13 +113,31 @@ def _date_identity_ok(widget: WidgetDiscovery, metric_id: str) -> bool:
 
 
 def _exact_measure_labels(widget: WidgetDiscovery) -> tuple[str, ...]:
-    titles = {normalize_label(c.title) for c in widget.structure.measures}
+    labels = _label_index(widget)
     matched = []
     for candidate in CANCELLATION_CANDIDATES.values():
         key = normalize_label(candidate.discovery_label)
-        if key and key in titles and _date_identity_ok(widget, candidate.metric_id):
+        if key and key in labels and _date_identity_ok(widget, candidate.metric_id):
             matched.append(candidate.metric_id)
     return tuple(matched)
+
+
+def _match_basis(widget: WidgetDiscovery, metric_ids: tuple[str, ...]) -> str:
+    labels = _label_index(widget)
+    sources: list[str] = []
+    for metric_id in metric_ids:
+        key = normalize_label(CANCELLATION_CANDIDATES[metric_id].discovery_label)
+        for source in labels.get(key or "", ()):
+            if source not in sources:
+                sources.append(source)
+    return " and ".join(sources) if sources else "measure title"
+
+
+def _context_suffix(widget: WidgetDiscovery) -> str:
+    tokens = _context_tokens(widget)
+    if not tokens:
+        return ""
+    return "; context fields: " + ", ".join(tokens)
 
 
 def safe_inventory_row(widget: WidgetDiscovery) -> dict[str, Any]:
@@ -95,13 +156,21 @@ def safe_inventory_row(widget: WidgetDiscovery) -> dict[str, Any]:
                 "kind": role.kind,
                 "jaql_type": role.jaql_type,
                 "title": role.title,
+                "column_title": role.column_title,
+                "table": role.table,
+                "column": role.column,
                 "date_level": role.date_level,
+                "context_fields": [
+                    {"table": field.table, "column": field.column} for field in role.context_fields
+                ],
             }
             for role in s.metadata_roles
         ],
         "measure_titles": [c.title for c in s.measures],
         "dimension_titles": [c.title for c in s.dimensions],
         "dimension_columns": [c.column for c in s.dimensions],
+        "column_titles": list(_column_titles(widget)),
+        "context_fields": list(_context_tokens(widget)),
         "has_date_dimension": any(c.is_date for c in s.dimensions),
         "date_grain": s.date_grain,
         "response_shape": None if r is None else r.shape,
@@ -136,10 +205,10 @@ def classify_cancellation_widget(widget: WidgetDiscovery) -> CancellationSourceC
     reason = ""
     if exact_people and not dates:
         role, confidence = ROLE_PEOPLE, CONF_EXACT
-        reason = f"Exact measure title(s) for {', '.join(exact_people)}"
+        reason = f"Exact {_match_basis(widget, exact_people)} for {', '.join(exact_people)}{_context_suffix(widget)}"
     elif exact_daily and dates:
         role, confidence = ROLE_DAILY, CONF_EXACT
-        reason = f"Exact measure title(s) for {', '.join(exact_daily)}"
+        reason = f"Exact {_match_basis(widget, exact_daily)} for {', '.join(exact_daily)}{_context_suffix(widget)}"
     elif people_structure and people_hint and (shape in _PEOPLE_SHAPES or shape is None):
         role, confidence = ROLE_PEOPLE, CONF_STRUCTURAL
         reason = "Multiple measures, no date dimension, cancellation-related title metadata"
@@ -162,7 +231,9 @@ def classify_cancellation_widget(widget: WidgetDiscovery) -> CancellationSourceC
         fingerprint=widget.definition_fingerprint,
         semantic_role=role,
         confidence=confidence,
-        reason=reason,
+        reason=reason + ("" if confidence == CONF_EXACT else _context_suffix(widget)),
+        column_titles=_column_titles(widget),
+        context_fields=_context_tokens(widget),
     )
 
 
@@ -189,6 +260,8 @@ def candidate_document(candidates: tuple[CancellationSourceCandidate, ...]) -> l
             "semantic_role": c.semantic_role,
             "confidence": c.confidence,
             "reason": c.reason,
+            "column_titles": list(c.column_titles),
+            "context_fields": list(c.context_fields),
         }
         for c in candidates
     ]

@@ -63,6 +63,14 @@ def normalize_label(text: Any) -> str | None:
 
 
 @dataclass(frozen=True)
+class FieldIdentity:
+    """A referenced table and column. No filter members and no formula text."""
+
+    table: str | None
+    column: str | None
+
+
+@dataclass(frozen=True)
 class Column:
     title: str | None
     kind: str  # "measure" | "dimension"
@@ -70,6 +78,8 @@ class Column:
     level: str | None
     table: str | None = None
     column: str | None = None
+    column_title: str | None = None
+    context_fields: tuple[FieldIdentity, ...] = ()
 
     @property
     def is_date(self) -> bool:
@@ -78,18 +88,26 @@ class Column:
 
 @dataclass(frozen=True)
 class MetadataRole:
-    """Safe role of one metadata item. No filter members, no formulas."""
+    """Safe role of one metadata item. No filter members and no formula text."""
 
     panel: str
     kind: str
     jaql_type: str | None
     title: str | None
     date_level: str | None
+    column_title: str | None = None
+    table: str | None = None
+    column: str | None = None
+    context_fields: tuple[FieldIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
 class WidgetStructure:
-    """Safe structural metadata from a dashboard request body; no filter values, no formulas."""
+    """Safe structural metadata from a dashboard request body.
+
+    ``columnTitle``, table, column, and context field names are kept.
+    Filter member values and formula text are not.
+    """
 
     dashboard_id: str
     widget_id: str
@@ -119,6 +137,39 @@ class WidgetStructure:
         return dates[0].level
 
 
+def _text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _column_title(item: Mapping[str, Any], jaql: Mapping[str, Any]) -> str | None:
+    """``columnTitle`` is a separate label from ``jaql.title``. Either location is accepted."""
+    for source in (jaql, item):
+        title = _text(source.get("columnTitle"))
+        if title is not None:
+            return title
+    return None
+
+
+def _context_fields(jaql: Mapping[str, Any]) -> tuple[FieldIdentity, ...]:
+    """Table and column names referenced by a measure context. Literals and members are dropped."""
+    context = jaql.get("context")
+    if not isinstance(context, Mapping):
+        return ()
+    found: list[FieldIdentity] = []
+    for value in context.values():
+        if not isinstance(value, Mapping):
+            continue
+        identity = FieldIdentity(_text(value.get("table")), _text(value.get("column")))
+        if identity.table is None and identity.column is None:
+            continue
+        if identity not in found:
+            found.append(identity)
+    return tuple(sorted(found, key=lambda item: (item.table or "", item.column or "")))
+
+
 def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | None:
     if not isinstance(payload, Mapping):
         return None
@@ -134,20 +185,26 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
     dashboard_filters = 0
     for item in items:
         jaql = item.get("jaql") if isinstance(item.get("jaql"), Mapping) else {}
-        title = jaql.get("title") if isinstance(jaql.get("title"), str) else None
-        jaql_type = jaql.get("type") if isinstance(jaql.get("type"), str) else None
-        level = jaql.get("level") if isinstance(jaql.get("level"), str) else None
-        table = jaql.get("table") if isinstance(jaql.get("table"), str) else None
-        column_name = jaql.get("column") if isinstance(jaql.get("column"), str) else None
+        title = _text(jaql.get("title"))
+        jaql_type = _text(jaql.get("type"))
+        level = _text(jaql.get("level"))
+        table = _text(jaql.get("table"))
+        column_name = _text(jaql.get("column"))
+        column_title = _column_title(item, jaql)
+        context_fields = _context_fields(jaql)
         if item.get("panel") == "scope":
             filters += 1
             dashboard_filters += jaql.get("isDashboardFilter") is True
-            roles.append(MetadataRole("scope", "filter", jaql_type, title, level))
+            roles.append(MetadataRole(
+                "scope", "filter", jaql_type, title, level, column_title, table, column_name, context_fields,
+            ))
             continue
         kind = "measure" if jaql.get("type") == "measure" or "formula" in jaql else "dimension"
-        datatype = jaql.get("datatype") if isinstance(jaql.get("datatype"), str) else None
-        columns.append(Column(title, kind, datatype, level, table, column_name))
-        roles.append(MetadataRole("result", kind, jaql_type, title, level))
+        datatype = _text(jaql.get("datatype"))
+        columns.append(Column(title, kind, datatype, level, table, column_name, column_title, context_fields))
+        roles.append(MetadataRole(
+            "result", kind, jaql_type, title, level, column_title, table, column_name, context_fields,
+        ))
     datasource = payload.get("datasource") if isinstance(payload.get("datasource"), Mapping) else {}
     widget_type = payload.get("widgetType")
     return WidgetStructure(
@@ -166,7 +223,11 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
 
 
 def title_matches(structure: WidgetStructure, targets: Iterable[str]) -> dict[str, tuple[str, ...]]:
-    """Exact (normalized) matches of target labels against widget, measure and dimension titles."""
+    """Exact matches against widget, measure, and dimension ``jaql.title`` values.
+
+    ``columnTitle``, table, column, and context field names are not match sources.
+    Production discovery stays on the existing title fields.
+    """
     wanted = {normalize_label(t) for t in targets} - {None}
     found: dict[str, list[str]] = {}
 
@@ -419,6 +480,115 @@ class WidgetDiscovery:
             for label in self.response.matched_category_labels:
                 merged.setdefault(normalize_label(label), []).append(SOURCE_CATEGORY_LABEL)
         return {key: tuple(sources) for key, sources in merged.items()}
+
+
+HIDDEN_STATE_METADATA = "Fingerprint differs only in non-exposed state metadata."
+
+
+@dataclass(frozen=True)
+class FingerprintStateDifference:
+    """Which exposed safe fields differ between two fingerprints of one widget."""
+
+    widget_id: str
+    widget_title: str
+    fingerprint_a: str
+    fingerprint_b: str
+    column_title_changed: bool
+    table_column_changed: bool
+    context_fields_changed: bool
+    scope_structure_changed: bool
+    jaql_title_changed: bool
+    note: str | None
+
+
+def _role_column_titles(structure: WidgetStructure) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((role.panel, role.column_title or "") for role in structure.metadata_roles))
+
+
+def _role_tables(structure: WidgetStructure) -> tuple[tuple[str, str, str], ...]:
+    return tuple(sorted(
+        (role.panel, role.table or "", role.column or "") for role in structure.metadata_roles
+    ))
+
+
+def _role_context(structure: WidgetStructure) -> tuple[tuple[str, str, str], ...]:
+    return tuple(sorted(
+        (role.panel, field.table or "", field.column or "")
+        for role in structure.metadata_roles
+        for field in role.context_fields
+    ))
+
+
+def _scope_structure(structure: WidgetStructure) -> tuple[tuple[str, ...], ...]:
+    return tuple(sorted(
+        (
+            role.kind,
+            role.jaql_type or "",
+            role.title or "",
+            role.column_title or "",
+            role.table or "",
+            role.column or "",
+            role.date_level or "",
+            tuple((field.table or "", field.column or "") for field in role.context_fields),
+        )
+        for role in structure.metadata_roles
+        if role.panel == "scope"
+    ))
+
+
+def _jaql_titles(structure: WidgetStructure) -> tuple[tuple[str, str, str], ...]:
+    return tuple(sorted(
+        (role.panel, role.kind, role.title or "") for role in structure.metadata_roles
+    ))
+
+
+def explain_fingerprint_differences(
+    widgets: Iterable[WidgetDiscovery],
+) -> tuple[FingerprintStateDifference, ...]:
+    """Pairwise safe comparison of definitions that share a widget id.
+
+    Member values are not compared. When every exposed safe field matches,
+    the note is ``HIDDEN_STATE_METADATA``.
+    """
+    grouped: dict[str, list[WidgetDiscovery]] = {}
+    for widget in widgets:
+        if not widget.definition_fingerprint:
+            continue
+        grouped.setdefault(widget.structure.widget_id, []).append(widget)
+    differences = []
+    for widget_id in sorted(grouped):
+        group = sorted(grouped[widget_id], key=lambda item: item.definition_fingerprint or "")
+        if len(group) < 2:
+            continue
+        for index, left in enumerate(group):
+            for right in group[index + 1:]:
+                structure_a = left.structure
+                structure_b = right.structure
+                column_title_changed = _role_column_titles(structure_a) != _role_column_titles(structure_b)
+                table_column_changed = _role_tables(structure_a) != _role_tables(structure_b)
+                context_fields_changed = _role_context(structure_a) != _role_context(structure_b)
+                scope_structure_changed = _scope_structure(structure_a) != _scope_structure(structure_b)
+                jaql_title_changed = _jaql_titles(structure_a) != _jaql_titles(structure_b)
+                hidden = not any((
+                    column_title_changed,
+                    table_column_changed,
+                    context_fields_changed,
+                    scope_structure_changed,
+                    jaql_title_changed,
+                ))
+                differences.append(FingerprintStateDifference(
+                    widget_id=widget_id,
+                    widget_title=structure_a.widget_title,
+                    fingerprint_a=left.definition_fingerprint or "",
+                    fingerprint_b=right.definition_fingerprint or "",
+                    column_title_changed=column_title_changed,
+                    table_column_changed=table_column_changed,
+                    context_fields_changed=context_fields_changed,
+                    scope_structure_changed=scope_structure_changed,
+                    jaql_title_changed=jaql_title_changed,
+                    note=HIDDEN_STATE_METADATA if hidden else None,
+                ))
+    return tuple(differences)
 
 
 @dataclass(frozen=True)

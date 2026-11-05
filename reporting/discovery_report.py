@@ -23,7 +23,12 @@ from metrics.cancellation_identification import (
 from metrics.catalog import DISCOVERY_TARGETS, STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED
 from metrics.discovery import MetricDiscovery
 from reporting.formatting import fmt_time
-from sisense.discovery import DiscoveryResult, WidgetDiscovery, normalize_label
+from sisense.discovery import (
+    DiscoveryResult,
+    WidgetDiscovery,
+    explain_fingerprint_differences,
+    normalize_label,
+)
 
 DISCOVERY_DIR = Path("discovery")
 HTML_NAME = "wave1_metric_discovery.html"
@@ -42,8 +47,11 @@ def _widget_dict(widget: WidgetDiscovery, distinct_definitions: int) -> dict[str
         "widget_type": s.widget_type,
         "datasource": s.datasource_title,
         "measures": [c.title for c in s.measures],
+        "measure_details": [_column_detail(c) for c in s.measures],
         "dimensions": [
-            {"title": c.title, "date": c.is_date, "table": c.table, "column": c.column} for c in s.dimensions
+            {"title": c.title, "date": c.is_date, "table": c.table, "column": c.column,
+             "column_title": c.column_title}
+            for c in s.dimensions
         ],
         "filter_count": s.filter_count,
         "dashboard_filter_count": s.dashboard_filter_count,
@@ -59,7 +67,13 @@ def _widget_dict(widget: WidgetDiscovery, distinct_definitions: int) -> dict[str
                 "kind": role.kind,
                 "jaql_type": role.jaql_type,
                 "title": role.title,
+                "column_title": role.column_title,
+                "table": role.table,
+                "column": role.column,
                 "date_level": role.date_level,
+                "context_fields": [
+                    {"table": field.table, "column": field.column} for field in role.context_fields
+                ],
             }
             for role in s.metadata_roles
         ],
@@ -110,6 +124,21 @@ def discovery_document(
         ],
         "widget_inventory": [safe_inventory_row(w) for w in result.widgets],
         "cancellation_source_identification": candidate_document(identify_cancellation_sources(result)),
+        "definition_state_comparison": [
+            {
+                "widget_id": item.widget_id,
+                "widget_title": item.widget_title,
+                "fingerprint_a": item.fingerprint_a,
+                "fingerprint_b": item.fingerprint_b,
+                "column_title_changed": item.column_title_changed,
+                "table_column_changed": item.table_column_changed,
+                "context_fields_changed": item.context_fields_changed,
+                "scope_structure_changed": item.scope_structure_changed,
+                "jaql_title_changed": item.jaql_title_changed,
+                "note": item.note,
+            }
+            for item in explain_fingerprint_differences(result.widgets)
+        ],
         "widgets": [
             _widget_dict(w, _definition_counts(result).get(w.structure.widget_id, 0)) for w in result.widgets
         ],
@@ -122,6 +151,35 @@ def _definition_counts(result: DiscoveryResult) -> dict[str, int]:
         if widget.definition_fingerprint:
             counts[widget.structure.widget_id] = counts.get(widget.structure.widget_id, 0) + 1
     return counts
+
+
+def _column_detail(column) -> dict[str, Any]:
+    return {
+        "title": column.title,
+        "column_title": column.column_title,
+        "table": column.table,
+        "column": column.column,
+        "context_fields": [
+            {"table": field.table, "column": field.column} for field in column.context_fields
+        ],
+    }
+
+
+def _field_bits(column) -> str:
+    bits = []
+    if column.column_title:
+        bits.append(f"columnTitle {_e(column.column_title)}")
+    if column.table or column.column:
+        bits.append(_e(".".join(part for part in (column.table, column.column) if part)))
+    if column.context_fields:
+        fields = ", ".join(
+            ".".join(part for part in (field.table, field.column) if part)
+            for field in column.context_fields
+        )
+        bits.append(f"context {_e(fields)}")
+    if not bits:
+        return ""
+    return f" <span class=\"muted\">({'; '.join(bits)})</span>"
 
 
 def _e(value: Any) -> str:
@@ -155,7 +213,7 @@ def _summary_rows(metrics: tuple[MetricDiscovery, ...]) -> str:
 def _widget_card(widget: WidgetDiscovery, states: list[tuple[str, str]], distinct_definitions: int) -> str:
     s = widget.structure
     r = widget.response
-    measures = "".join(f"<li>{_e(c.title)}</li>" for c in s.measures) or "<li>—</li>"
+    measures = "".join(f"<li>{_e(c.title)}{_field_bits(c)}</li>" for c in s.measures) or "<li>—</li>"
     dimensions = "".join(
         f"<li>{_e(c.title)}{' <span class=muted>(date)</span>' if c.is_date else ''}"
         f"{(' <span class=muted>' + _e(f'{c.table}.{c.column}') + '</span>') if c.table and c.column else ''}</li>"
@@ -191,8 +249,38 @@ def _widget_card(widget: WidgetDiscovery, states: list[tuple[str, str]], distinc
         f'<section class="card"><h3>{_e(s.widget_title)}</h3><table class="kv">{table}</table>'
         f'<div class="cols"><div><h4>Measures</h4><ul>{measures}</ul></div>'
         f'<div><h4>Dimensions</h4><ul>{dimensions}</ul></div>'
+        f'<div><h4>Scope fields</h4><ul>{_scope_list(s)}</ul></div>'
         f'<div><h4>Exact label matches</h4><ul>{matches}</ul></div></div></section>'
     )
+
+
+def _scope_list(structure) -> str:
+    roles = [role for role in structure.metadata_roles if role.panel == "scope"]
+    if not roles:
+        return "<li>—</li>"
+    items = []
+    for role in roles:
+        identity = ".".join(part for part in (role.table, role.column) if part)
+        bits = [f"title {_e(role.title)}"]
+        if role.column_title:
+            bits.append(f"columnTitle {_e(role.column_title)}")
+        if identity:
+            bits.append(_e(identity))
+        if role.date_level:
+            bits.append(f"level {_e(role.date_level)}")
+        items.append(f"<li>{'; '.join(bits)}</li>")
+    return "".join(items)
+
+
+def _scope_identity(structure) -> str:
+    parts = []
+    for role in structure.metadata_roles:
+        if role.panel != "scope":
+            continue
+        identity = ".".join(part for part in (role.table, role.column) if part)
+        if identity and identity not in parts:
+            parts.append(identity)
+    return " | ".join(parts)
 
 
 def render_discovery_html(
@@ -225,7 +313,9 @@ def render_discovery_html(
         f"<td>{w.structure.metadata_item_count}</td>"
         f"<td>{_e(', '.join(f'{role.panel}:{role.kind}' for role in w.structure.metadata_roles))}</td>"
         f"<td>{_e(' | '.join(c.title or '—' for c in w.structure.measures))}</td>"
+        f"<td>{_e(' | '.join(c.column_title or '—' for c in w.structure.measures))}</td>"
         f"<td>{_e(' | '.join((c.column or c.title or '—') for c in w.structure.dimensions))}</td>"
+        f"<td>{_e(_scope_identity(w.structure))}</td>"
         f"<td>{_e(w.structure.date_grain)}</td>"
         f"<td>{_e(None if w.response is None else w.response.shape)}</td>"
         f"<td>{_e(None if w.response is None else w.response.http_status)}</td>"
@@ -239,6 +329,19 @@ def render_discovery_html(
         f"<td>{len(w.structure.dimensions)}</td><td>{w.structure.filter_count}</td>"
         f"<td>{_e(w.response.shape if w.response else 'NOT INSPECTED')}</td></tr>"
         for w in others
+    )
+    comparison = explain_fingerprint_differences(result.widgets)
+    comparison_rows = "".join(
+        f"<tr><td>{_e(item.widget_title)}<div class=\"muted\">{_e(item.widget_id)}</div></td>"
+        f"<td class=\"fp\">{_e(item.fingerprint_a)}</td><td class=\"fp\">{_e(item.fingerprint_b)}</td>"
+        f"<td>{'yes' if item.column_title_changed else 'no'}</td>"
+        f"<td>{'yes' if item.table_column_changed else 'no'}</td>"
+        f"<td>{'yes' if item.context_fields_changed else 'no'}</td>"
+        f"<td>{'yes' if item.scope_structure_changed else 'no'}</td>"
+        f"<td>{_e(item.note)}</td></tr>"
+        for item in comparison
+    ) or (
+        '<tr><td colspan="8" class="muted">No widget retained more than one definition.</td></tr>'
     )
     counts = {state: sum(m.state == state for m in metrics) for state in (STATE_VERIFIED, STATE_DISCOVERED, STATE_PENDING)}
     return f"""<!DOCTYPE html>
@@ -264,9 +367,17 @@ Structure only: no metric values, filter values, payloads or credentials.</p>
 <p class="muted">Structure from naturally observed JAQL only. No request/response bodies, filter values, secrets, or metric values.
 Display labels are not assumed to equal JAQL measure titles. This inventory does not promote a metric.</p>
 <table class="grid"><thead><tr><th>Widget</th><th>Datasource</th><th>Metadata items</th><th>Roles</th>
-<th>Measure titles</th><th>Dimension titles</th><th>Date grain</th><th>Shape</th><th>HTTP</th>
+<th>Measure titles</th><th>columnTitle</th><th>Dimension titles</th><th>Scope table.column</th>
+<th>Date grain</th><th>Shape</th><th>HTTP</th>
 <th>Observations</th><th>Definition Fingerprint</th></tr></thead>
-<tbody>{inventory_rows or '<tr><td colspan="11" class="muted">None</td></tr>'}</tbody></table></section>
+<tbody>{inventory_rows or '<tr><td colspan="13" class="muted">None</td></tr>'}</tbody></table></section>
+<section class="card"><h2>Definition state comparison</h2>
+<p class="muted">Pairs of fingerprints for the same widget. Compared fields are columnTitle, table, column,
+context field names, and scope structure. Member values are not compared.</p>
+<table class="grid"><thead><tr><th>Widget</th><th>Fingerprint A</th><th>Fingerprint B</th>
+<th>columnTitle changed</th><th>table/column changed</th><th>context fields changed</th>
+<th>scope structure changed</th><th>Note</th></tr></thead>
+<tbody>{comparison_rows}</tbody></table></section>
 <section class="card"><h2>Cancellation Source Identification</h2>
 <p class="muted">Structural nomination for human review only. STRUCTURAL_CANDIDATE is not VERIFIED.
 Exact production binding remains strict and is unchanged.</p>

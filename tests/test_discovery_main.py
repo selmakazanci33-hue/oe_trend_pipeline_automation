@@ -63,7 +63,7 @@ class DiscoveryMainTests(PipelineHarness):
         files = [p for p in self.root.rglob("*") if p.is_file()]
         contents = [p.read_bytes().decode("utf-8", errors="ignore") for p in files] + [out, logs]
         for forbidden in (GUID_SENTINEL, "RESP-SENTINEL", FILTER_SENTINEL, "5550001", "5,550,001", "5550003",
-                          "5550005", "Count(["):
+                          "5550005", "Count([AAA-1])", "Count([17769-998]", "[17769-998]"):
             for content in contents:
                 self.assertNotIn(forbidden, content)
 

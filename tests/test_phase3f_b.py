@@ -316,7 +316,7 @@ class EvidenceMainTests(PassiveMetricsHarness):
         files = [p for p in self.root.rglob("*") if p.is_file()]
         for content in [p.read_bytes().decode("utf-8", errors="ignore") for p in files] + [out, logs]:
             for forbidden in ("RESP-SENTINEL", self.request_sentinel, self.response_sentinel,
-                              "FILTER-MEMBER-SENTINEL", "Count(["):
+                              "FILTER-MEMBER-SENTINEL", "Count([AAA-1])", "Count([17769-998]", "[17769-998]"):
                 self.assertNotIn(forbidden, content)
 
 

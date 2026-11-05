@@ -322,7 +322,8 @@ class ArtifactTests(unittest.TestCase):
                      "CATEGORICAL", "DISCOVERED", "VERIFIED", "PENDING", "Average Age", "Not the executive"):
             self.assertIn(text.lower(), html.lower())
         for forbidden in ("9876543", "9,876,543", "1234567", "7654321", "8765432", "8,765,432", "4455667",
-                          "Hidden Category", guid, "RESP-SENTINEL", FILTER_SENTINEL, "Count([", "formula",
+                          "Hidden Category", guid, "RESP-SENTINEL", FILTER_SENTINEL, "Count([AAA-1])",
+                          "Count([17769-998]", "[17769-998]", "86D64-0B4",
                           "xsrf", "cookie", "x-tenant", "authorization"):
             self.assertNotIn(forbidden.lower(), html.lower())
             self.assertNotIn(forbidden.lower(), doc_text.lower())

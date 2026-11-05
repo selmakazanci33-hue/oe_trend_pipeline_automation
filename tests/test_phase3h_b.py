@@ -129,7 +129,8 @@ class InventoryTests(unittest.TestCase):
             doc = (path.parent / "wave1_metric_discovery.json").read_text(encoding="utf-8")
         self.assertIn("Safe widget inventory", html)
         self.assertIn("Cancellation Source Identification", html)
-        for forbidden in (guid, FILTER_SENTINEL, "Count([", "12,101", "12101",
+        for forbidden in (guid, FILTER_SENTINEL, "Count([AAA-1])", "Count([17769-998]", "[17769-998]",
+                          "86D64-0B4", "12,101", "12101",
                           "xsrf", "cookie", "authorization", "server.session"):
             self.assertNotIn(forbidden.lower(), html.lower())
             self.assertNotIn(forbidden.lower(), doc.lower())

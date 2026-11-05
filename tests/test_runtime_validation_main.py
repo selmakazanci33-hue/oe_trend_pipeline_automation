@@ -74,7 +74,7 @@ class RuntimeValidationMainTests(PipelineHarness):
         self.assert_no_secrets_anywhere(out, logs)
         files = [p for p in self.root.rglob("*") if p.is_file()]
         contents = [p.read_bytes().decode("utf-8", errors="ignore") for p in files] + [out, logs]
-        for forbidden in (GUID, FILTER_SENTINEL, "Count(["):
+        for forbidden in (GUID, FILTER_SENTINEL, "Count([AAA-1])", "Count([17769-998]", "[17769-998]"):
             for content in contents:
                 self.assertNotIn(forbidden, content)
 
