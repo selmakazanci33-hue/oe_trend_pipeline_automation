@@ -1,0 +1,11 @@
+.env
+runtime/auth/
+runtime/artifacts/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Playwright traces/HAR files can contain cookies and headers.
+*.har
+trace*.zip
