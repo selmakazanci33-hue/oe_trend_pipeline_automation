@@ -39,6 +39,7 @@ class ReportingSummary:
     analytics: MetricAnalytics
     report_path: Path
     panels: tuple[MetricPanel, ...] = ()
+    overall_data_status: str | None = None
 
 
 class ReportingPipeline:
@@ -110,4 +111,5 @@ class ReportingPipeline:
             analytics=model.analytics,
             report_path=path,
             panels=panels,
+            overall_data_status=model.overall_data_status,
         )

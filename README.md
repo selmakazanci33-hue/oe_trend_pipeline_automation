@@ -92,13 +92,25 @@ snapshot) and nothing is stored for it. Passive values are stored only when
 the application request also succeeded. % Effectuated is stored as the raw
 ratio and shown as a percentage; its changes are shown in percentage points.
 
+Header semantics: **Data Status** summarizes every production metric — `LIVE`
+(all live), `PARTIAL` (some live), `STALE` (none live, some history) or
+`NOT AVAILABLE`; each card keeps its own status. **Last Successful Refresh**
+is the latest time any production metric was validated (this run's live
+values or stored snapshots). **Pipeline Status** is this run's retrieval
+result.
+
 Applications Started, Submitted Applications, Total Applicants, New, Active
-and Passive are **validation only** (PENDING in the dashboard): their values
-matched the UI, but no verified filter definition exists for their widgets
-yet. Promotion evidence is the `definition_fingerprint` in
-`reports/validation/wave1_runtime_validation.json` from a run whose values
-match the Sisense UI; it is approved by setting `expected_fingerprint` in
-`metrics/catalog.py` and moving the metric into `METRICS`.
+and Passive are **validation only** (PENDING in the dashboard). With
+`SISENSE_RUNTIME_VALIDATION=true` the validation report adds a promotion
+evidence section per candidate (widget, datasource, exact measure titles,
+bound measure, value, HTTP status, definition fingerprint, eligibility) and a
+shared-widget check for New/Active/Passive. When the Currently Enrolled
+control passes, a value-free observation (identities, exact measure titles,
+fingerprints) is appended to `data/history/wave1_fingerprint_observations.json`;
+the next run compares against it: `STABLE`, `CHANGED`, `MISSING` or
+`NO BASELINE`. Nothing is promoted automatically: promotion means setting
+`expected_fingerprint` (and the exact measure title) in `metrics/catalog.py`
+and moving the metric into `METRICS` after human review.
 
 `data/` and `reports/` contain internal business metrics and are git-ignored.
 The database contains metric values and run status only; no credentials,

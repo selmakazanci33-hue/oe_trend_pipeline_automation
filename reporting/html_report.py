@@ -29,7 +29,7 @@ from reporting.formatting import (
     fmt_signed,
     fmt_time,
 )
-from reporting.model import DATA_LIVE, DATA_NO_HISTORY, DATA_STALE, MetricPanel, ReportModel
+from reporting.model import DATA_LIVE, DATA_NOT_AVAILABLE, DATA_PARTIAL, DATA_STALE, MetricPanel, ReportModel
 
 LATEST_REPORT = Path("latest") / "index.html"
 
@@ -37,8 +37,8 @@ BADGE_CLASSES = {
     "LIVE": "badge-live",
     "PASS": "badge-pass",
     "STALE": "badge-stale",
-    "NO HISTORY": "badge-none",
     "NOT AVAILABLE": "badge-error",
+    "PARTIAL": "badge-stale",
     "ERROR": "badge-error",
     "SAVED": "badge-pass",
     "DUPLICATE_SLOT": "badge-stale",
@@ -172,9 +172,10 @@ def _kpi_section(model: ReportModel) -> str:
             f'<div class="kpi-note">{escape(note)}</div>{trend}</section>')
 
 
-def _trend_section() -> str:
+def _trend_section(model: ReportModel) -> str:
     return ('<section class="card"><div class="section-head"><h2>Enrollment Trend</h2>'
-            '<span class="section-sub">Built only from stored validated snapshots</span></div>'
+            f'<span class="section-sub">{escape(model.metric.display_name)} — built only from stored validated '
+            'snapshots</span></div>'
             '<div id="trend-chart" class="chart"></div><div id="trend-empty" class="empty" hidden>'
             'No snapshot history yet. The trend appears after the first successful retrieval.</div></section>')
 
@@ -182,7 +183,8 @@ def _trend_section() -> str:
 def _movement_section(model: ReportModel) -> str:
     cards = "".join(_comparison_card(c) for c in model.analytics.comparisons)
     return (f'<section><div class="section-head"><h2>Enrollment Movement</h2>'
-            f'<span class="section-sub">Derived from actual snapshot history only</span></div>'
+            f'<span class="section-sub">{escape(model.metric.display_name)} — derived from actual snapshot history '
+            f'only</span></div>'
             f'<div class="grid grid-4">{cards}</div></section>')
 
 
@@ -209,35 +211,35 @@ def _quality_section(model: ReportModel) -> str:
         ("Data Status", _badge(model.data_status)),
         ("Retrieval Status", _badge(model.retrieval_status)
          + (f' <span class="muted">({escape(model.failure_type)})</span>' if model.failure_type else "")),
-        ("Last Successful Retrieval", escape(fmt_time(model.last_successful_refresh))),
+        ("Last Successful Retrieval", escape(fmt_time(model.last_successful_retrieval))),
         ("Latest Snapshot", escape(fmt_derived(model.analytics.latest_snapshot_time))),
         ("Snapshot This Run", _badge(model.snapshot_write_status) if model.snapshot_write_status
          else '<span class="muted">Not written</span>'),
-        ("Historical Snapshot Count", escape(str(model.analytics.stored_snapshot_count))
-         + ("" if model.analytics.stored_snapshot_count else f" {_badge(DATA_NO_HISTORY)}")),
+        ("Historical Snapshot Count", escape(str(model.analytics.stored_snapshot_count))),
     ]
     body = "".join(f"<tr><th>{label}</th><td>{value}</td></tr>" for label, value in rows)
-    return (f'<section class="card"><div class="section-head"><h2>Data Freshness &amp; Quality</h2></div>'
+    return (f'<section class="card"><div class="section-head"><h2>Data Freshness &amp; Quality</h2>'
+            f'<span class="section-sub">{escape(metric.display_name)}</span></div>'
             f'<table class="kv">{body}</table></section>')
 
 
 def _banner(model: ReportModel) -> str:
-    if model.data_status == DATA_STALE:
+    status = model.overall_data_status
+    if status == DATA_PARTIAL:
+        return ('<div class="banner banner-partial"><strong>Partially refreshed.</strong> Some metrics could not be '
+                'refreshed in the latest run; each metric shows its own status.</div>')
+    if status == DATA_STALE:
         return ('<div class="banner banner-stale"><strong>Historical data.</strong> The latest retrieval did not '
                 'complete; values shown are from the last successful snapshot.</div>')
-    if model.data_status == DATA_NO_HISTORY:
+    if status == DATA_NOT_AVAILABLE:
         return ('<div class="banner banner-error"><strong>No data.</strong> No validated value has been '
                 'retrieved or stored yet.</div>')
     return ""
 
 
 def _roadmap_chips(items) -> str:
-    return "".join(
-        f'<li><span>{escape(i.name)}'
-        + (f'<span class="roadmap-note">{escape(i.note)}</span>' if i.note else "")
-        + '</span><span class="badge badge-none">PENDING</span></li>'
-        for i in items
-    )
+    return "".join(f'<li><span>{escape(i.name)}</span><span class="badge badge-none">PENDING</span></li>'
+                   for i in items)
 
 
 def _pending_view(module_id: str, title: str) -> str:
@@ -256,7 +258,8 @@ def _panel_card(panel: MetricPanel) -> str:
         reason = f" ({panel.failure})" if panel.failure else ""
         return (f'<div class="card metric-card" data-metric="{escape(metric.metric_id)}">{head}'
                 f'<div class="metric-value muted">Not available</div>'
-                f'<div class="kpi-note">No validated value has been retrieved or stored yet{escape(reason)}.</div></div>')
+                f'<div class="kpi-note">No validated value has been retrieved or stored yet{escape(reason)}.</div>'
+                f'{_panel_snapshot(panel)}</div>')
     if panel.data_status == DATA_LIVE:
         note = f"Live value retrieved {fmt_time(latest.observed_at)}"
     else:
@@ -274,7 +277,13 @@ def _panel_card(panel: MetricPanel) -> str:
         change = f'<div class="metric-change muted">{escape(previous.change.reason or "Insufficient history")}</div>'
     return (f'<div class="card metric-card" data-metric="{escape(metric.metric_id)}">{head}'
             f'<div class="metric-value">{escape(fmt_metric_value(latest.value, metric.value_format))}</div>'
-            f'<div class="kpi-note">{escape(note)}</div>{change}</div>')
+            f'<div class="kpi-note">{escape(note)}</div>{change}{_panel_snapshot(panel)}</div>')
+
+
+def _panel_snapshot(panel: MetricPanel) -> str:
+    state = _badge(panel.snapshot_write_status) if panel.snapshot_write_status else '<span class="muted">Not written</span>'
+    return (f'<div class="metric-snapshot">Snapshot this run: {state} '
+            f'<span class="muted">({panel.analytics.stored_snapshot_count} stored)</span></div>')
 
 
 def _panels_section(panels, title: str) -> str:
@@ -282,7 +291,7 @@ def _panels_section(panels, title: str) -> str:
         return ""
     cards = "".join(_panel_card(p) for p in panels)
     return (f'<section><div class="section-head"><h2>{escape(title)}</h2>'
-            f'<span class="section-sub">Verified dashboard metrics; each carries its own status</span></div>'
+            f'<span class="section-sub">Each metric carries its own status, timestamp and snapshot history</span></div>'
             f'<div class="grid grid-4">{cards}</div></section>')
 
 
@@ -331,8 +340,8 @@ def render_html(model: ReportModel) -> str:
         nav.append(f'<button class="nav-item{" is-active" if module.module_id == "overview" else ""}" '
                    f'data-view="{escape(module.module_id)}">{escape(module.title)}{tag}</button>')
         if module.module_id == "overview":
-            content = (_kpi_section(model) + _panels_section(model.panels, "Verified Dashboard Metrics")
-                       + _movement_section(model) + _trend_section() + _quality_section(model))
+            content = (_kpi_section(model) + _panels_section(model.panels, "Key Metrics")
+                       + _movement_section(model) + _trend_section(model) + _quality_section(model))
         elif module.module_id == "enrollment":
             content = _enrollment_view(model)
         else:
@@ -366,7 +375,7 @@ def render_html(model: ReportModel) -> str:
   <dl class="meta">
     <div><dt>Last Successful Refresh</dt><dd>{escape(fmt_time(model.last_successful_refresh))}</dd></div>
     <div><dt>Data Source</dt><dd>{escape(model.metric.source)}</dd></div>
-    <div><dt>Data Status</dt><dd>{_badge(model.data_status)}</dd></div>
+    <div><dt>Data Status</dt><dd>{_badge(model.overall_data_status)}</dd></div>
     <div><dt>Pipeline Status</dt><dd>{pipeline_badge}</dd></div>
   </dl>
 </header>
@@ -470,11 +479,11 @@ table{width:100%;border-collapse:collapse}.kv th{text-align:left;width:38%;color
 .badge-none{background:#e5e7eb;color:#374151}.badge-source{background:#e0f2f1;color:#0f766e}
 .badge-derived{background:#ede9fe;color:#5b21b6}
 .banner{padding:12px 16px;border-radius:10px}.banner-stale{background:#fff7e6;border:1px solid #f6d48a}
-.banner-error{background:#fdecec;border:1px solid #f5b5b5}
+.banner-error{background:#fdecec;border:1px solid #f5b5b5}.banner-partial{background:#fff7e6;border:1px solid #f6d48a}
 .roadmap{list-style:none;padding:0;margin:14px 0 0;display:grid;gap:8px;
 grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}.roadmap li{display:flex;justify-content:space-between;
 align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fafbfd}
-.roadmap-note{display:block;font-size:12px;color:var(--muted);margin-top:4px}
+.metric-snapshot{margin-top:8px;font-size:12px;color:var(--muted)}
 .metric-value{font-size:34px;font-weight:800;color:var(--navy);line-height:1.15;margin-top:8px;font-variant-numeric:tabular-nums}
 .metric-value.muted{font-size:20px;color:var(--muted)}.metric-change{margin-top:10px;font-weight:700;font-size:14px}
 footer{font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}

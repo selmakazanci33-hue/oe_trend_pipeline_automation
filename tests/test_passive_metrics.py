@@ -341,20 +341,22 @@ class SafetyTests(unittest.TestCase):
         forbidden_modules = {"requests", "httpx", "urllib", "http", "socket", "aiohttp", "urllib3"}
         forbidden_attrs = {"request", "post", "fetch", "evaluate", "goto", "reload", "route", "new_page",
                            "new_context", "api_request", "wait_for_response", "expect_response"}
-        tree = ast.parse((PROJECT_ROOT / "metrics/passive_metrics.py").read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                self.assertFalse({a.name.split(".")[0] for a in node.names} & forbidden_modules)
-            if isinstance(node, ast.ImportFrom):
-                self.assertNotIn((node.module or "").split(".")[0], forbidden_modules)
-            if isinstance(node, ast.Attribute):
-                self.assertNotIn(node.attr, forbidden_attrs, node.lineno)
+        for relative in ("metrics/passive_metrics.py", "metrics/fingerprint_evidence.py"):
+            tree = ast.parse((PROJECT_ROOT / relative).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    self.assertFalse({a.name.split(".")[0] for a in node.names} & forbidden_modules, relative)
+                if isinstance(node, ast.ImportFrom):
+                    self.assertNotIn((node.module or "").split(".")[0], forbidden_modules, relative)
+                if isinstance(node, ast.Attribute):
+                    self.assertNotIn(node.attr, forbidden_attrs, f"{relative}:{node.lineno}")
 
     def test_no_hardcoded_ui_validation_values(self):
         literals = ("566051", "566,051", "565200", "565,200", "832776", "832,776", "0.954845", "95.48",
                     "2510", "2,510", "35266", "35,266", "756009", "756,009", "793512", "793,512",
                     "791826", "791,826")
-        for relative in (*self.SOURCES, "main.py", "metrics/runtime_validation.py"):
+        for relative in (*self.SOURCES, "main.py", "metrics/runtime_validation.py", "metrics/fingerprint_evidence.py",
+                         "reporting/validation_report.py"):
             text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
             for literal in literals:
                 self.assertNotIn(literal, text, relative)

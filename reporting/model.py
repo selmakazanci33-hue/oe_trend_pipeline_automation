@@ -4,9 +4,16 @@ Status rules:
 - LIVE: this run retrieved and validated a live value.
 - STALE: this run did not produce a live value, but stored snapshots exist;
   the KPI shows the latest stored snapshot, labelled as historical.
-- NO HISTORY: no live value and no stored snapshots.
-Additional production metrics (panels) carry the same rules per metric, with
-NOT AVAILABLE in place of NO HISTORY.
+- NOT AVAILABLE: no live value and no stored snapshots.
+Additional production metrics (panels) carry the same rules per metric.
+
+The header's overall Data Status summarizes every production metric: LIVE (all
+LIVE), PARTIAL (some LIVE, some not), STALE (none LIVE, some STALE) or NOT
+AVAILABLE. Last Successful Refresh is the latest time any production metric
+was validated: this run's live values and every production metric's stored
+snapshots. (A past run whose values all fell into already-recorded snapshot
+slots is represented by that slot's stored time; run records are not used
+because they do not record which metrics were validated.)
 Pipeline status is PASS only when this run's retrieval succeeded.
 """
 
@@ -22,10 +29,23 @@ from sisense.models import MetricResult
 
 DATA_LIVE = "LIVE"
 DATA_STALE = "STALE"
-DATA_NO_HISTORY = "NO HISTORY"
 DATA_NOT_AVAILABLE = "NOT AVAILABLE"
+DATA_NO_HISTORY = DATA_NOT_AVAILABLE
+DATA_PARTIAL = "PARTIAL"
 PIPELINE_PASS = "PASS"
 PIPELINE_ERROR = "ERROR"
+
+
+def overall_status(statuses: list[str]) -> str:
+    """LIVE if all LIVE; PARTIAL if some LIVE; STALE if none LIVE but some STALE; else NOT AVAILABLE."""
+    live = sum(s == DATA_LIVE for s in statuses)
+    if statuses and live == len(statuses):
+        return DATA_LIVE
+    if live:
+        return DATA_PARTIAL
+    if any(s == DATA_STALE for s in statuses):
+        return DATA_STALE
+    return DATA_NOT_AVAILABLE
 
 
 @dataclass(frozen=True)
@@ -58,10 +78,16 @@ class ReportModel:
     modules: tuple[Module, ...]
     roadmap: tuple[RoadmapItem, ...]
     panels: tuple["MetricPanel", ...] = ()
+    last_successful_retrieval: datetime | None = None
 
     @property
     def kpi(self) -> DataPoint | None:
         return self.analytics.latest
+
+    @property
+    def overall_data_status(self) -> str:
+        """Health of every production metric in this report (header)."""
+        return overall_status([self.data_status, *(p.data_status for p in self.panels)])
 
     def panels_for(self, module_id: str) -> tuple["MetricPanel", ...]:
         return tuple(p for p in self.panels if p.metric.module_id == module_id)
@@ -137,6 +163,7 @@ def build_report_model(
     refresh_times = [s.retrieved_at_utc for s in snapshots]
     if current is not None:
         refresh_times.append(current.observed_at)
+    all_times = refresh_times + [p.observed_at for panel in panels for p in panel.analytics.points]
 
     return ReportModel(
         metric=metric,
@@ -146,7 +173,8 @@ def build_report_model(
         retrieval_status=PIPELINE_PASS if outcome.succeeded else PIPELINE_ERROR,
         failure_type=outcome.failure_type,
         snapshot_write_status=outcome.snapshot_write.status if outcome.snapshot_write else None,
-        last_successful_refresh=max(refresh_times) if refresh_times else None,
+        last_successful_refresh=max(all_times) if all_times else None,
+        last_successful_retrieval=max(refresh_times) if refresh_times else None,
         generated_at=generated_at,
         modules=MODULES,
         roadmap=ROADMAP,

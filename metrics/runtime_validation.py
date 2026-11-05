@@ -74,6 +74,9 @@ class RuntimeValue:
     binding: str | None = None
     reason: str | None = None
     definition_fingerprint: str | None = None
+    datasource: str | None = None
+    measure_titles: tuple[str, ...] = ()
+    bound_measure_title: str | None = None
 
     @property
     def production_status(self) -> str:
@@ -109,6 +112,20 @@ def bind_measure(payload: Mapping[str, Any], label: str) -> MeasureBinding:
     mask = fmt.get("mask") if isinstance(fmt, Mapping) else None
     percent = isinstance(mask, Mapping) and mask.get("percent") is True
     return MeasureBinding(titles[column], column, basis, percent)
+
+
+def _datasource_title(payload: Mapping[str, Any]) -> str | None:
+    datasource = payload.get("datasource")
+    title = datasource.get("title") if isinstance(datasource, Mapping) else None
+    return title if isinstance(title, str) else None
+
+
+def _observed_measure_titles(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Exact measure titles of a measures-only request; empty when any measure lacks a title (fail closed)."""
+    try:
+        return tuple(result_measure_titles(payload))
+    except InvalidJaqlPayloadError:
+        return ()
 
 
 def _null_cell(body: Mapping[str, Any], width: int, column: int) -> bool:
@@ -187,6 +204,8 @@ def validate_runtime_values(
                                      reason="Dashboard request not retained"))
             continue
         common["definition_fingerprint"] = definition_fingerprint(payload)
+        common["datasource"] = _datasource_title(payload)
+        common["measure_titles"] = _observed_measure_titles(payload)
         status, text = _read_response(request)
         if status != 200:
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **{**common, "http_status": status},
@@ -199,7 +218,8 @@ def validate_runtime_values(
         result, value, binding, reason = extract_runtime_value(payload, text, label, target.value_kind)
         rows.append(RuntimeValue(
             target.metric_id, label, result, value, percent_format=bool(binding and binding.percent_format),
-            binding=binding.basis if binding else None, reason=reason, **common,
+            binding=binding.basis if binding else None, reason=reason,
+            bound_measure_title=binding.title if binding else None, **common,
         ))
     in_scope = {t.metric_id for t in targets}
     for target in WAVE1_TARGETS:

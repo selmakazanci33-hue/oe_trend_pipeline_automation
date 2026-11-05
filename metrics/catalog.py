@@ -26,8 +26,6 @@ STATUS_ACTIVE = "active"
 STATUS_PENDING = "pending_verification"
 STATUS_VALIDATION_ONLY = "validation_only"
 PENDING_MESSAGE = "Metric integration pending verification."
-AWAITING_FINGERPRINT = ("Runtime value validated against the Sisense UI; production promotion awaits "
-                        "a verified request-definition (filter) fingerprint.")
 
 VALUE_FORMATS = {"integer", "decimal", "percent"}
 
@@ -88,7 +86,6 @@ class RoadmapItem:
     name: str
     module_id: str
     status: str = STATUS_PENDING
-    note: str | None = None
 
 
 CURRENTLY_ENROLLED = MetricDefinition(
@@ -192,12 +189,12 @@ MODULES: tuple[Module, ...] = (
 
 # Roadmap only: names from the existing business dashboard. No payloads, no queries.
 ROADMAP: tuple[RoadmapItem, ...] = (
-    RoadmapItem("Applications Started", "applications", note=AWAITING_FINGERPRINT),
-    RoadmapItem("Submitted Applications", "applications", note=AWAITING_FINGERPRINT),
-    RoadmapItem("Total Applicants", "applications", note=AWAITING_FINGERPRINT),
-    RoadmapItem("New", "enrollment", note=AWAITING_FINGERPRINT),
-    RoadmapItem("Active", "enrollment", note=AWAITING_FINGERPRINT),
-    RoadmapItem("Passive", "enrollment", note=AWAITING_FINGERPRINT),
+    RoadmapItem("Applications Started", "applications"),
+    RoadmapItem("Submitted Applications", "applications"),
+    RoadmapItem("Total Applicants", "applications"),
+    RoadmapItem("New", "enrollment"),
+    RoadmapItem("Active", "enrollment"),
+    RoadmapItem("Passive", "enrollment"),
     RoadmapItem("Cancelled", "enrollment"),
     RoadmapItem("Terminated", "enrollment"),
     RoadmapItem("Metal Tier", "enrollment"),

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from metrics.catalog import VALUE_PERCENT
+from metrics.fingerprint_evidence import CandidateEvidence, EvidenceOutcome
 from metrics.runtime_validation import (
     RV_NOT_AVAILABLE,
     RV_PENDING,
@@ -46,10 +47,98 @@ def _fmt_optional_int(value: int | None) -> str:
     return "—" if value is None else fmt_int(value)
 
 
-def validation_document(
-    rows: tuple[RuntimeValue, ...], control: ControlComparison, generated_at: datetime
-) -> dict[str, Any]:
+def _evidence_value(e: CandidateEvidence) -> str:
+    return "—" if e.value is None else fmt_int(e.value)
+
+
+def evidence_document(outcome: EvidenceOutcome) -> dict[str, Any]:
     return {
+        "note": "Evidence for human review only; nothing here promotes a metric",
+        "observation_recorded": outcome.observation_recorded,
+        "observation_note": outcome.observation_note,
+        "fingerprint_comparison": {
+            "observation_a_observed_at_utc": outcome.comparison.baseline_observed_at_utc,
+            "results": outcome.comparison.results,
+        },
+        "candidates": [
+            {
+                "metric_id": e.metric_id,
+                "label": e.label,
+                "widget_id": e.widget_id,
+                "widget_title": e.widget_title,
+                "datasource": e.datasource,
+                "measure_titles": list(e.measure_titles),
+                "measure_count": e.measure_count,
+                "bound_measure_title": e.bound_measure_title,
+                "binding": e.binding,
+                "definition_fingerprint": e.fingerprint,
+                "extraction_status": e.extraction_status,
+                "runtime_value": e.value,
+                "http_status": e.http_status,
+                "observed_at_utc": e.observed_at_utc,
+                "eligible_for_future_promotion": e.eligible,
+                "eligibility_reason": e.eligibility_reason,
+                "fingerprint_stability": outcome.comparison.results.get(e.metric_id),
+            }
+            for e in outcome.evidence
+        ],
+        "shared_widgets": [
+            {
+                "widget_id": s.widget_id,
+                "metric_ids": list(s.metric_ids),
+                "same_fingerprint": s.same_fingerprint,
+                "distinct_exact_measures": s.distinct_measures,
+                "exact_measure_binding": s.exact_binding,
+                "all_eligible": s.all_eligible,
+                "structurally_eligible_together": s.eligible_together,
+            }
+            for s in outcome.shared
+        ],
+    }
+
+
+def _evidence_html(outcome: EvidenceOutcome | None) -> str:
+    if outcome is None:
+        return ""
+    rows = "".join(
+        f"<tr><td>{_e(e.label)}<div class=\"muted\">{_e(e.metric_id)}</div></td>"
+        f"<td>{_e(e.widget_title)}<div class=\"muted\">{_e(e.widget_id)}</div></td><td>{_e(e.datasource)}</td>"
+        f"<td>{_e(' | '.join(e.measure_titles))}<div class=\"muted\">{e.measure_count} measure(s)</div></td>"
+        f"<td>{_e(e.bound_measure_title)}</td><td class=\"num\">{_e(_evidence_value(e))}</td>"
+        f"<td>{_e(e.extraction_status)}</td><td>{_e(e.http_status)}</td>"
+        f"<td><span class=\"badge {'ok' if e.eligible else 'fail'}\">{'ELIGIBLE' if e.eligible else 'NOT ELIGIBLE'}</span>"
+        f"<div class=\"muted\">{_e(e.eligibility_reason) if e.eligibility_reason else ''}</div></td>"
+        f"<td>{_e(outcome.comparison.results.get(e.metric_id))}</td><td class=\"fp\">{_e(e.fingerprint)}</td></tr>"
+        for e in outcome.evidence
+    )
+    shared = "".join(
+        f"<tr><td>{_e(s.widget_id)}</td><td>{_e(', '.join(s.metric_ids))}</td>"
+        f"<td>{'YES' if s.same_fingerprint else 'NO'}</td><td>{'YES' if s.distinct_measures else 'NO'}</td>"
+        f"<td>{'YES' if s.exact_binding else 'NO'}</td>"
+        f"<td><span class=\"badge {'ok' if s.eligible_together else 'fail'}\">"
+        f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}</span></td></tr>"
+        for s in outcome.shared
+    )
+    recorded = ("Recorded as a fingerprint observation." if outcome.observation_recorded
+                else f"Not recorded as a fingerprint observation ({outcome.observation_note}).")
+    baseline = outcome.comparison.baseline_observed_at_utc
+    return f"""<section class="card"><h2>Promotion evidence — validation-only candidates</h2>
+<p class="muted">Observed {_e(outcome.evidence[0].observed_at_utc if outcome.evidence else None)}. {_e(recorded)}
+Stability compares this run (Observation B) with the previous recorded observation (Observation A:
+{_e(baseline)}). STABLE / CHANGED / MISSING / NO BASELINE never approve a metric; promotion is a human code change.</p>
+<table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Datasource</th><th>Exact measure titles</th>
+<th>Bound measure</th><th>Value</th><th>Extraction</th><th>HTTP</th><th>Future promotion</th><th>A/B</th>
+<th>Definition Fingerprint</th></tr></thead><tbody>{rows}</tbody></table></section>
+<section class="card"><h2>Shared-widget check</h2>
+<table class="grid"><thead><tr><th>Widget</th><th>Metrics</th><th>Same fingerprint</th><th>Distinct exact measures</th>
+<th>Exact binding</th><th>Result</th></tr></thead><tbody>{shared}</tbody></table></section>"""
+
+
+def validation_document(
+    rows: tuple[RuntimeValue, ...], control: ControlComparison, generated_at: datetime,
+    evidence: EvidenceOutcome | None = None,
+) -> dict[str, Any]:
+    document = {
         "generated_at_utc": generated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "scope": "Runtime values from the dashboard's own responses; validation only, not production data",
         "metrics": [
@@ -79,6 +168,9 @@ def validation_document(
             "reason": control.reason,
         },
     }
+    if evidence is not None:
+        document["promotion_evidence"] = evidence_document(evidence)
+    return document
 
 
 def _e(value: Any) -> str:
@@ -86,7 +178,8 @@ def _e(value: Any) -> str:
 
 
 def render_validation_html(
-    rows: tuple[RuntimeValue, ...], control: ControlComparison, generated_at: datetime
+    rows: tuple[RuntimeValue, ...], control: ControlComparison, generated_at: datetime,
+    evidence: EvidenceOutcome | None = None,
 ) -> str:
     body = "".join(
         f"<tr><td>{_e(r.label)}</td><td>{_e(r.widget_title)}<div class=\"muted\">{_e(r.widget_id)}</div></td>"
@@ -113,7 +206,7 @@ for comparison with the Sisense UI. Not stored in history; not shown in the exec
 <tr><th>Result</th><td><span class="badge {'ok' if control.status == 'PASS' else 'fail'}">{_e(control.status)}</span>
 {f'<span class="muted">{_e(control.reason)}</span>' if control.reason else ''}</td></tr>
 </table></section>
-<section class="card"><h2>Discovered metrics</h2>
+<section class="card"><h2>Wave 1 metrics</h2>
 <table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Shape</th><th>HTTP</th><th>Runtime Value</th>
 <th>Extraction Status</th><th>Production Status</th><th>Binding / Reason</th><th>Definition Fingerprint</th></tr></thead>
 <tbody>{body}</tbody></table>
@@ -122,18 +215,21 @@ It does not make a metric VERIFIED; promotion requires explicit approval after U
 fingerprint is a one-way hash of the widget request's dashboard, widget, datasource, measure and filter
 definitions (no filter values are shown); a fingerprint from a run whose values matched the UI is the
 evidence required to promote a validation-only metric.</p></section>
+{_evidence_html(evidence)}
 </main></body></html>
 """
 
 
 def write_validation_report(
-    rows: tuple[RuntimeValue, ...], control: ControlComparison, reports_dir: Path, generated_at: datetime
+    rows: tuple[RuntimeValue, ...], control: ControlComparison, reports_dir: Path, generated_at: datetime,
+    evidence: EvidenceOutcome | None = None,
 ) -> Path:
     directory = Path(reports_dir) / VALIDATION_DIR
     directory.mkdir(parents=True, exist_ok=True)
-    _atomic_write(directory / JSON_NAME, json.dumps(validation_document(rows, control, generated_at), indent=2))
+    _atomic_write(directory / JSON_NAME,
+                  json.dumps(validation_document(rows, control, generated_at, evidence), indent=2))
     html_path = directory / HTML_NAME
-    _atomic_write(html_path, render_validation_html(rows, control, generated_at))
+    _atomic_write(html_path, render_validation_html(rows, control, generated_at, evidence))
     return html_path
 
 

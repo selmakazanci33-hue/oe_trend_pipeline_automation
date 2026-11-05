@@ -26,7 +26,7 @@ def ce_widget_text(ce, pct, extra=None):
     return json.dumps(body)
 
 
-class PassiveMetricsMainTests(PipelineHarness):
+class PassiveMetricsHarness(PipelineHarness):
     def setUp(self):
         super().setUp()
         self.request_sentinel = f"REQ-SENTINEL-{secrets.token_hex(8)}"
@@ -50,9 +50,11 @@ class PassiveMetricsMainTests(PipelineHarness):
         return match.group(1)
 
     def pending_chips(self):
-        return set(re.findall(r'<li><span>([^<]+)(?:<span class="roadmap-note">[^<]*</span>)?</span>'
-                              r'<span class="badge badge-none">PENDING</span></li>', self.report_html()))
+        return set(re.findall(r'<li><span>([^<]+)</span><span class="badge badge-none">PENDING</span></li>',
+                              self.report_html()))
 
+
+class PassiveMetricsMainTests(PassiveMetricsHarness):
     # --- LIVE / promotion -------------------------------------------------
 
     def test_live_percent_effectuated_with_one_application_request(self):

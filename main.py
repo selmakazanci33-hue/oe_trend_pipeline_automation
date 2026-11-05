@@ -57,6 +57,7 @@ from metrics.catalog import (
     passive_metrics,
 )
 from metrics.discovery import resolve_targets
+from metrics.fingerprint_evidence import OBSERVATIONS_FILE, collect_evidence
 from metrics.passive_metrics import (
     MAX_CANDIDATES_PER_WIDGET,
     PassiveMetricOutcome,
@@ -520,10 +521,18 @@ def finish_runtime_validation(
     capture = outcome.runtime
     reason = capture.control_reason or (None if application_value is not None else "Application request failed")
     control = ControlComparison(capture.passive_control_value, application_value, reason)
+    now = datetime.now(timezone.utc)
+    evidence = None
+    try:
+        log_path = settings.history_db_path.parent / OBSERVATIONS_FILE if settings.history_db_path else None
+        evidence = collect_evidence(capture.rows, now.strftime("%Y-%m-%dT%H:%M:%SZ"), log_path,
+                                    control.status == "PASS")
+    except Exception as exc:
+        logger.error("Could not collect promotion evidence: %s", type(exc).__name__)
     path = None
     if settings.reports_dir is not None:
         try:
-            path = write_validation_report(capture.rows, control, settings.reports_dir, datetime.now(timezone.utc))
+            path = write_validation_report(capture.rows, control, settings.reports_dir, now, evidence)
         except Exception as exc:
             logger.error("Could not write the runtime validation report: %s", type(exc).__name__)
     print()
@@ -532,6 +541,16 @@ def finish_runtime_validation(
         value = format_runtime_value(row) if row.value is not None else ""
         print(f"  {row.label:<28}{row.status:<20}{value}")
     print(f"  {'Currently Enrolled Control':<28}{control.status}")
+    if evidence is not None:
+        print("  Promotion evidence (validation-only candidates; nothing is promoted automatically)")
+        for e in evidence.evidence:
+            eligible = "ELIGIBLE" if e.eligible else f"NOT ELIGIBLE ({e.eligibility_reason})"
+            print(f"    {e.label:<26}{evidence.comparison.results.get(e.metric_id, ''):<14}{eligible}")
+        for s in evidence.shared:
+            print(f"    Shared widget {', '.join(s.metric_ids)}: "
+                  f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}")
+        print(f"    Fingerprint observation: "
+              f"{'RECORDED' if evidence.observation_recorded else evidence.observation_note}")
     print(f"  Report: {path if path else 'not written'}")
     print()
     print(RULE)
@@ -585,6 +604,7 @@ def print_reporting_summary(summary: ReportingSummary, result: MetricResult) -> 
         ("Data Status", summary.data_status),
     ]
     rows += [(c.label, fmt_comparison(c)) for c in summary.analytics.comparisons]
+    rows.append(("Overall Data Status", summary.overall_data_status or summary.data_status))
     rows.append(("Report", str(summary.report_path)))
     for label, value in rows:
         print(f"{label:<22}{value}")
