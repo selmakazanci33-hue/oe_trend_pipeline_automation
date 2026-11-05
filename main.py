@@ -31,6 +31,14 @@ from sisense.models import (
     SisenseError,
     VerifiedJaqlPayloadRequired,
 )
+from sisense.passive import (
+    ExpectedWidgetQuery,
+    PassiveComparison,
+    PassiveObservation,
+    PassiveWidgetObserver,
+    comparison_lines,
+    observe_passive_value,
+)
 from sisense.payloads.currently_enrolled import build_currently_enrolled_query
 from sisense.request_metadata import (
     ForwardedHeaders,
@@ -163,9 +171,13 @@ def main() -> int:
             logger.error("Snapshot history unavailable (%s); Sisense was not contacted", type(exc).__name__)
             return EXIT_FAILURE
 
+    passive_observer = create_passive_observer(settings, query)
+    passive_observation = None
     try:
         with sync_playwright() as playwright:
-            authenticator = SisenseAuthenticator(playwright, settings)
+            authenticator = SisenseAuthenticator(
+                playwright, settings, extra_observers=(passive_observer,) if passive_observer else ()
+            )
             session = authenticator.open_session()
             try:
                 if settings.diagnostics_only:
@@ -175,6 +187,8 @@ def main() -> int:
                 if settings.debug_session:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
                 request_metadata = obtain_request_metadata(session, authenticator.jaql_observer, settings)
+                if passive_observer is not None:
+                    passive_observation = run_passive_observation(session, passive_observer, settings.timeouts.slow)
                 value = retrieve_value(session, settings, query, request_metadata)
             finally:
                 session.close()
@@ -205,6 +219,8 @@ def main() -> int:
     logger.info("Result: %s", json.dumps(result.to_dict()))
 
     print_report(result, settings.manual_baseline, query.widget_title)
+    if passive_observation is not None:
+        print_passive_comparison(PassiveComparison(passive_observation, result.value))
 
     if reporting is None:
         return EXIT_OK
@@ -215,6 +231,53 @@ def main() -> int:
         return EXIT_FAILURE
     print_reporting_summary(summary, result)
     return EXIT_OK
+
+
+def create_passive_observer(settings: Settings, query: JaqlQuery) -> PassiveWidgetObserver | None:
+    if not settings.passive_proof or settings.diagnostics_only:
+        return None
+    try:
+        return PassiveWidgetObserver(ExpectedWidgetQuery.from_verified_query(query))
+    except ValueError as exc:
+        logger.error("Passive proof disabled: %s", exc)
+        return None
+
+
+def run_passive_observation(
+    session: AuthenticatedSession, observer: PassiveWidgetObserver, timeout: int
+) -> PassiveObservation:
+    """Validation only: never raises, never sends a request, never affects the application value."""
+    try:
+        if not observer.candidates():
+            try:
+                session.context.wait_for_event(
+                    "requestfinished", predicate=observer.is_widget_request, timeout=timeout
+                )
+            except PlaywrightTimeoutError:
+                pass
+        observer.stop()
+        observation = observe_passive_value(observer)
+    except Exception as exc:
+        observer.stop()
+        observation = PassiveObservation(
+            observer.widget_requests_seen, None, None, False, None, f"Passive observation error ({type(exc).__name__})"
+        )
+    logger.info(
+        "Passive proof: %d dashboard JAQL POST(s) seen, %d for the verified widget; parse %s",
+        observer.target_requests_seen, observer.widget_requests_seen, "PASS" if observation.parsed else "FAIL",
+    )
+    return observation
+
+
+def print_passive_comparison(comparison: PassiveComparison) -> None:
+    """Validation output only; the application value stays authoritative."""
+    print()
+    print("Passive JAQL proof (validation only — application value is authoritative)")
+    for line in comparison_lines(comparison):
+        print(line)
+    print()
+    print(RULE)
+    logger.info("Passive Validation: %s", comparison.status)
 
 
 def create_reporting(settings: Settings) -> ReportingPipeline | None:

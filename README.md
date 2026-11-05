@@ -79,6 +79,20 @@ real snapshots exist. They are never filled with zero or a baseline.
 The database contains metric values and run status only; no credentials,
 cookies, headers or payloads.
 
+## Passive JAQL proof (validation only)
+
+With `SISENSE_PASSIVE_PROOF=true`, the run also finds the dashboard's own JAQL
+request for the verified widget, checks dashboard, widget, datasource,
+primary measure and all business filters against the verified payload, reads
+the response the browser already received, parses it with the same parser,
+and prints `Passive Validation: PASS/FAIL` next to the application value.
+It sends no extra request. The application value remains the only value
+stored or reported; bodies are inspected in memory and never logged or saved.
+
+```powershell
+$env:SISENSE_PASSIVE_PROOF="true"; .\.venv\Scripts\python.exe main.py
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the

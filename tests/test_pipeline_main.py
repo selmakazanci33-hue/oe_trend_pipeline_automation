@@ -29,7 +29,7 @@ class FixedDatetime(datetime):
         return cls.moment
 
 
-class PipelineMainTests(unittest.TestCase):
+class PipelineHarness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -40,8 +40,8 @@ class PipelineMainTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_main(self, responses, at=RUN_TIME, **overrides):
-        observed = [ObservedRequest(self.secrets.observed_headers())]
+    def run_main(self, responses, at=RUN_TIME, extra_observed=(), **overrides):
+        observed = [ObservedRequest(self.secrets.observed_headers()), *extra_observed]
         pw = FakePlaywright(responses)
         browser = pw.chromium.browser
         browser.new_context = lambda **kw: browser.contexts.append(
@@ -94,6 +94,8 @@ class PipelineMainTests(unittest.TestCase):
             for content in contents:
                 self.assertNotIn(secret, content)
 
+
+class PipelineMainTests(PipelineHarness):
     def test_success_stores_snapshot_and_writes_live_report(self):
         code, out, logs, posts = self.run_main([FakeResponse(200, ok_body(812345))])
         self.assertEqual(code, app.EXIT_OK)

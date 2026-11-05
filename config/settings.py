@@ -108,6 +108,7 @@ class Settings:
     history_db_path: Path | None = None
     reports_dir: Path | None = None
     snapshot_granularity: str = "hour"
+    passive_proof: bool = False
 
     @property
     def jaql_url(self) -> str:
@@ -274,4 +275,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         history_db_path=_env_path("HISTORY_DB_PATH", PROJECT_ROOT / "data" / "history" / "oe_metrics.sqlite3"),
         reports_dir=_env_path("REPORTS_DIR", PROJECT_ROOT / "reports"),
         snapshot_granularity=snapshot_granularity,
+        passive_proof=_env_bool("SISENSE_PASSIVE_PROOF", False),
     )

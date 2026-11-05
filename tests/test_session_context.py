@@ -282,6 +282,8 @@ HEADER_SECRET = "HEADER-VALUE-MUST-NOT-APPEAR"
 
 
 class ObservedRequest:
+    post_data = None
+
     def __init__(self, headers, status=200, method="POST", url=VERIFIED_JAQL_URL, fail=False):
         self.method = method
         self.url = url

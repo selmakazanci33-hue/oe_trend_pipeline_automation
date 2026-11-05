@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, Playwright, Request
@@ -50,10 +50,14 @@ class SisenseAuthenticator:
         playwright: Playwright,
         settings: Settings,
         password_prompt: Callable[[], str] = prompt_password,
+        extra_observers: Sequence[Any] = (),
     ):
         self._playwright = playwright
         self._settings = settings
         self._password_prompt = password_prompt
+        # Passive observers with an ``attach(context)`` method; attached to every
+        # new context before the dashboard loads.
+        self._extra_observers = tuple(extra_observers)
         self._navigation_retry = RetryPolicy.from_settings(settings.retry)
         # Always attached: the application's JAQL request reuses metadata from the
         # dashboard's own successful JAQL request. Observation is passive.
@@ -102,6 +106,8 @@ class SisenseAuthenticator:
         context.set_default_timeout(self._settings.timeouts.default)
         context.set_default_navigation_timeout(self._settings.timeouts.slow)
         self.jaql_observer.attach(context)
+        for observer in self._extra_observers:
+            observer.attach(context)
         return context
 
     # Locators -----------------------------------------------------------
