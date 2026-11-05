@@ -235,6 +235,9 @@ class DiscoveryObserver:
     def entries(self) -> list[_WidgetEntry]:
         return list(self._widgets.values())
 
+    def entry(self, widget_id: str) -> _WidgetEntry | None:
+        return self._widgets.get(widget_id)
+
 
 @dataclass(frozen=True)
 class ResponseSummary:
@@ -351,20 +354,27 @@ def _read_response(request: Request) -> tuple[int | None, str | None]:
         return status, None
 
 
-def _control_check(request: Request, status: int | None, text: str | None, expected: ExpectedWidgetQuery) -> str:
-    """The verified widget keeps its strict Phase 3B checks; discovery never relaxes them."""
+def verified_widget_value(
+    request: Request, status: int | None, text: str | None, expected: ExpectedWidgetQuery
+) -> tuple[str, int | None]:
+    """(control result, passive value) for the verified widget, with the strict Phase 3B checks."""
     payload = _request_payload(request)
     if payload is None or not check_candidate(payload, expected).accepted:
-        return "FAIL (identity/filter verification)"
+        return "FAIL (identity/filter verification)", None
     if status != 200:
-        return f"FAIL (HTTP {status})"
+        return f"FAIL (HTTP {status})", None
     if text is None:
-        return "FAIL (response body unavailable)"
+        return "FAIL (response body unavailable)", None
     try:
-        extract_count_measure_value(parse_json_body(text), payload, expected.primary_measure_title)
+        value = extract_count_measure_value(parse_json_body(text), payload, expected.primary_measure_title)
     except Exception as exc:
-        return f"FAIL (parse: {type(exc).__name__})"
-    return CONTROL_PASS
+        return f"FAIL (parse: {type(exc).__name__})", None
+    return CONTROL_PASS, value
+
+
+def _control_check(request: Request, status: int | None, text: str | None, expected: ExpectedWidgetQuery) -> str:
+    """The verified widget keeps its strict Phase 3B checks; discovery never relaxes them (and keeps no value)."""
+    return verified_widget_value(request, status, text, expected)[0]
 
 
 def evaluate_discovery(observer: DiscoveryObserver, expected: ExpectedWidgetQuery | None) -> DiscoveryResult:

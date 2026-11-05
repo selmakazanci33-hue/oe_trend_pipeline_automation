@@ -110,6 +110,7 @@ class Settings:
     snapshot_granularity: str = "hour"
     passive_proof: bool = False
     discovery: bool = False
+    runtime_validation: bool = False
 
     @property
     def jaql_url(self) -> str:
@@ -278,4 +279,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         snapshot_granularity=snapshot_granularity,
         passive_proof=_env_bool("SISENSE_PASSIVE_PROOF", False),
         discovery=_env_bool("SISENSE_DISCOVERY", False),
+        runtime_validation=_env_bool("SISENSE_RUNTIME_VALIDATION", False),
     )

@@ -152,6 +152,31 @@ WAVE1_TARGETS: tuple[DiscoveryTarget, ...] = (
 )
 
 
+VALUE_COUNT = "count"
+VALUE_PERCENT = "percent"
+
+
+@dataclass(frozen=True)
+class RuntimeValidationTarget:
+    """A DISCOVERED Wave 1 metric whose runtime value may be read for UI validation only."""
+
+    metric_id: str
+    value_kind: str
+
+
+# Phase 3D scope: exactly the seven metrics discovered in the controlled Phase 3C run.
+# Cancelled and Terminated stay PENDING and are never extracted here.
+RUNTIME_VALIDATION_TARGETS: tuple[RuntimeValidationTarget, ...] = (
+    RuntimeValidationTarget("applications_started", VALUE_COUNT),
+    RuntimeValidationTarget("submitted_applications", VALUE_COUNT),
+    RuntimeValidationTarget("total_applicants", VALUE_COUNT),
+    RuntimeValidationTarget("pct_effectuated", VALUE_PERCENT),
+    RuntimeValidationTarget("new", VALUE_COUNT),
+    RuntimeValidationTarget("active", VALUE_COUNT),
+    RuntimeValidationTarget("passive", VALUE_COUNT),
+)
+
+
 def catalog_state(metric_id: str) -> str:
     """Static state: VERIFIED for active catalogued metrics, otherwise PENDING until discovered at runtime."""
     metric = METRICS.get(metric_id)

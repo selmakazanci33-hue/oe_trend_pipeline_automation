@@ -50,7 +50,18 @@ from sisense.request_metadata import (
 )
 from metrics.catalog import CURRENTLY_ENROLLED, STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED, WAVE1_TARGETS
 from metrics.discovery import resolve_targets
+from metrics.runtime_validation import (
+    RV_NOT_AVAILABLE,
+    RV_PENDING,
+    RV_VALIDATION_FAILED,
+    RV_VALUE_EXTRACTED,
+    ControlComparison,
+    RuntimeValue,
+    passive_control_value,
+    validate_runtime_values,
+)
 from reporting.discovery_report import write_discovery_report
+from reporting.validation_report import format_runtime_value, write_validation_report
 from reporting.formatting import fmt_comparison, fmt_int, fmt_time
 from sisense.discovery import DiscoveryObserver, evaluate_discovery
 from reporting.pipeline import ReportingPipeline, ReportingSummary
@@ -208,10 +219,12 @@ def main() -> int:
     except MissingVerifiedInformation as exc:
         logger.error("STOP: %s", exc)
         report_failure(reporting, run_id, exc)
+        finish_runtime_validation(discovery_outcome, settings, None)
         return EXIT_MISSING_VERIFIED_INFO
     except (SisenseError, PlaywrightError) as exc:
         logger.error("Retrieval failed: %s: %s", type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "")
         report_failure(reporting, run_id, exc)
+        finish_runtime_validation(discovery_outcome, settings, None)
         return EXIT_FAILURE
 
     result = MetricResult(
@@ -236,6 +249,7 @@ def main() -> int:
         print_passive_comparison(PassiveComparison(passive_observation, result.value))
     if discovery_outcome is not None:
         print_discovery_summary(discovery_outcome)
+    finish_runtime_validation(discovery_outcome, settings, result.value)
 
     if reporting is None:
         return EXIT_OK
@@ -296,7 +310,7 @@ def print_passive_comparison(comparison: PassiveComparison) -> None:
 
 
 def create_discovery_observer(settings: Settings, query: JaqlQuery) -> DiscoveryObserver | None:
-    if not settings.discovery or settings.diagnostics_only:
+    if not (settings.discovery or settings.runtime_validation) or settings.diagnostics_only:
         return None
     try:
         verified_widget_id = ExpectedWidgetQuery.from_verified_query(query).widget_id
@@ -327,9 +341,19 @@ def wait_for_dashboard_quiet(session: AuthenticatedSession, observer: DiscoveryO
 
 
 @dataclass(frozen=True)
+class RuntimeCapture:
+    """Phase 3D values held in memory until the application control value is known."""
+
+    rows: tuple[RuntimeValue, ...]
+    passive_control_value: int | None
+    control_reason: str | None
+
+
+@dataclass(frozen=True)
 class DiscoveryOutcome:
     report_path: Path | None
     counts: dict[str, int]
+    runtime: RuntimeCapture | None = None
 
 
 def run_discovery(
@@ -356,11 +380,57 @@ def run_discovery(
         if settings.reports_dir is not None:
             path = write_discovery_report(metrics, result, settings.reports_dir, datetime.now(timezone.utc))
             logger.info("Wave 1 discovery report: %s", path)
-        return DiscoveryOutcome(path, counts)
+        runtime = capture_runtime_values(observer, metrics, expected) if settings.runtime_validation else None
+        return DiscoveryOutcome(path, counts, runtime)
     except Exception as exc:
         observer.stop()
         logger.error("Wave 1 discovery failed: %s", type(exc).__name__)
         return None
+
+
+def capture_runtime_values(
+    observer: DiscoveryObserver, metrics, expected: ExpectedWidgetQuery | None
+) -> RuntimeCapture | None:
+    """Phase 3D: read DISCOVERED values from already-returned responses (validation only, never raises)."""
+    try:
+        rows = validate_runtime_values(observer, metrics)
+        passive_value, reason = passive_control_value(observer, expected)
+    except Exception as exc:
+        logger.error("Wave 1 runtime validation failed: %s", type(exc).__name__)
+        return None
+    logger.info(
+        "Wave 1 runtime validation: %s",
+        ", ".join(f"{status} {sum(r.status == status for r in rows)}"
+                  for status in (RV_VALUE_EXTRACTED, RV_NOT_AVAILABLE, RV_VALIDATION_FAILED, RV_PENDING)),
+    )
+    return RuntimeCapture(rows, passive_value, reason)
+
+
+def finish_runtime_validation(
+    outcome: DiscoveryOutcome | None, settings: Settings, application_value: int | None
+) -> None:
+    """Write the validation artifact and print the summary; never affects the production result."""
+    if outcome is None or outcome.runtime is None:
+        return
+    capture = outcome.runtime
+    reason = capture.control_reason or (None if application_value is not None else "Application request failed")
+    control = ControlComparison(capture.passive_control_value, application_value, reason)
+    path = None
+    if settings.reports_dir is not None:
+        try:
+            path = write_validation_report(capture.rows, control, settings.reports_dir, datetime.now(timezone.utc))
+        except Exception as exc:
+            logger.error("Could not write the runtime validation report: %s", type(exc).__name__)
+    print()
+    print("Wave 1 runtime validation (developer review only — not stored, not in the executive report)")
+    for row in capture.rows:
+        value = format_runtime_value(row) if row.value is not None else ""
+        print(f"  {row.label:<28}{row.status:<20}{value}")
+    print(f"  {'Currently Enrolled Control':<28}{control.status}")
+    print(f"  Report: {path if path else 'not written'}")
+    print()
+    print(RULE)
+    logger.info("Currently Enrolled control: %s", control.status)
 
 
 def print_discovery_summary(outcome: DiscoveryOutcome) -> None:

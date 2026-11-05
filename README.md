@@ -112,6 +112,24 @@ history or shown in the executive dashboard. No extra request is sent.
 $env:SISENSE_DISCOVERY="true"; .\.venv\Scripts\python.exe main.py
 ```
 
+## Wave 1 runtime validation (developer review only)
+
+With `SISENSE_RUNTIME_VALIDATION=true` (implies discovery), the run reads the
+values of the seven DISCOVERED metrics (Applications Started, Submitted
+Applications, Total Applicants, % Effectuated, New, Active, Passive) from the
+responses the dashboard already received. Each value is bound to its exact
+measure definition in the dashboard's own request and checked by type; anything
+ambiguous fails closed. Cancelled and Terminated stay PENDING.
+
+Output: `reports/validation/wave1_runtime_validation.html` (+ `.json`) and a
+console summary, including the Currently Enrolled passive-vs-application
+control. Values are for comparison with the Sisense UI only: never stored in
+history, never shown in the executive dashboard, never promoted automatically.
+
+```powershell
+$env:SISENSE_RUNTIME_VALIDATION="true"; .\.venv\Scripts\python.exe main.py
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
