@@ -15,6 +15,11 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from metrics.cancellation_identification import (
+    candidate_document,
+    identify_cancellation_sources,
+    safe_inventory_row,
+)
 from metrics.catalog import DISCOVERY_TARGETS, STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED
 from metrics.discovery import MetricDiscovery
 from reporting.formatting import fmt_time
@@ -43,6 +48,21 @@ def _widget_dict(widget: WidgetDiscovery) -> dict[str, Any]:
         "observations": widget.observations,
         "structure_changed": widget.structure_changed,
         "matches": {label: list(sources) for label, sources in widget.matches.items()},
+        "datasource_id": s.datasource_id,
+        "metadata_item_count": s.metadata_item_count,
+        "metadata_roles": [
+            {
+                "panel": role.panel,
+                "kind": role.kind,
+                "jaql_type": role.jaql_type,
+                "title": role.title,
+                "date_level": role.date_level,
+            }
+            for role in s.metadata_roles
+        ],
+        "has_date_dimension": any(c.is_date for c in s.dimensions),
+        "date_grain": s.date_grain,
+        "definition_fingerprint": widget.definition_fingerprint,
         "control": widget.control,
         "response": None if r is None else {
             "http_status": r.http_status,
@@ -85,6 +105,8 @@ def discovery_document(
             }
             for m in metrics
         ],
+        "widget_inventory": [safe_inventory_row(w) for w in result.widgets],
+        "cancellation_source_identification": candidate_document(identify_cancellation_sources(result)),
         "widgets": [_widget_dict(w) for w in result.widgets],
     }
 
@@ -167,6 +189,28 @@ def render_discovery_html(
     others = [w for w in result.widgets if w.structure.widget_id not in by_widget]
     cards = "".join(_widget_card(w, by_widget[w.structure.widget_id]) for w in relevant) or (
         '<p class="muted">No dashboard widget carried an exact Wave 1 label.</p>')
+    identification = identify_cancellation_sources(result)
+    identification_rows = "".join(
+        f"<tr><td>{_e(c.widget_title)}<div class=\"muted\">{_e(c.widget_id)}</div></td>"
+        f"<td>{_e(c.datasource)}</td><td>{_e(' | '.join(t or '—' for t in c.measure_titles))}</td>"
+        f"<td>{_e(' | '.join(t or '—' for t in c.dimension_titles))}</td><td>{_e(c.date_grain)}</td>"
+        f"<td>{_e(c.response_shape)}</td><td>{_e(c.semantic_role)}</td><td>{_e(c.confidence)}</td>"
+        f"<td class=\"fp\">{_e(c.fingerprint)}</td><td>{_e(c.reason)}</td></tr>"
+        for c in identification
+    ) or '<tr><td colspan="10" class="muted">No cancellation-relevant widget was nominated from structure.</td></tr>'
+    inventory_rows = "".join(
+        f"<tr><td>{_e(w.structure.widget_title)}<div class=\"muted\">{_e(w.structure.widget_id)}</div></td>"
+        f"<td>{_e(w.structure.datasource_title)}<div class=\"muted\">{_e(w.structure.datasource_id)}</div></td>"
+        f"<td>{w.structure.metadata_item_count}</td>"
+        f"<td>{_e(', '.join(f'{role.panel}:{role.kind}' for role in w.structure.metadata_roles))}</td>"
+        f"<td>{_e(' | '.join(c.title or '—' for c in w.structure.measures))}</td>"
+        f"<td>{_e(' | '.join(c.title or '—' for c in w.structure.dimensions))}</td>"
+        f"<td>{_e(w.structure.date_grain)}</td>"
+        f"<td>{_e(None if w.response is None else w.response.shape)}</td>"
+        f"<td>{_e(None if w.response is None else w.response.http_status)}</td>"
+        f"<td class=\"fp\">{_e(w.definition_fingerprint)}</td></tr>"
+        for w in result.widgets
+    )
     other_rows = "".join(
         f"<tr><td>{_e(w.structure.widget_title)}</td><td>{_e(w.structure.widget_id)}</td>"
         f"<td>{_e(w.structure.widget_type)}</td><td>{len(w.structure.measures)}</td>"
@@ -192,6 +236,19 @@ Structure only: no metric values, filter values, payloads or credentials.</p>
 <table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Shape</th><th>HTTP</th><th>Status</th><th>Reason</th></tr></thead>
 <tbody>{_summary_rows(metrics)}</tbody></table>
 <p class="muted">DISCOVERED is not VERIFIED: discovered widgets are not stored in history or shown in the executive dashboard.</p></section>
+<section class="card"><h2>Safe widget inventory</h2>
+<p class="muted">Structure from naturally observed JAQL only. No request/response bodies, filter values, secrets, or metric values.
+Display labels are not assumed to equal JAQL measure titles. This inventory does not promote a metric.</p>
+<table class="grid"><thead><tr><th>Widget</th><th>Datasource</th><th>Metadata items</th><th>Roles</th>
+<th>Measure titles</th><th>Dimension titles</th><th>Date grain</th><th>Shape</th><th>HTTP</th>
+<th>Definition Fingerprint</th></tr></thead>
+<tbody>{inventory_rows or '<tr><td colspan="10" class="muted">None</td></tr>'}</tbody></table></section>
+<section class="card"><h2>Cancellation Source Identification</h2>
+<p class="muted">Structural nomination for human review only. STRUCTURAL_CANDIDATE is not VERIFIED.
+Exact production binding remains strict and is unchanged.</p>
+<table class="grid"><thead><tr><th>Widget</th><th>Datasource</th><th>Measure titles</th><th>Dimension titles</th>
+<th>Date grain</th><th>Shape</th><th>Role</th><th>Confidence</th><th>Fingerprint</th><th>Reason</th></tr></thead>
+<tbody>{identification_rows}</tbody></table></section>
 <h2>Matched widgets</h2>{cards}
 <section class="card"><h2>Other observed widgets ({len(others)})</h2>
 <table class="grid"><thead><tr><th>Title</th><th>Widget ID</th><th>Type</th><th>Measures</th><th>Dimensions</th><th>Filters</th><th>Shape</th></tr></thead>
@@ -238,4 +295,5 @@ h4{margin:6px 0;font-size:13px}ul{margin:0;padding-left:18px}.muted{color:#6b7c9
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
 .badge.verified{background:#dcfce7;color:#166534}.badge.discovered{background:#dbeafe;color:#1e40af}
 .badge.pending{background:#f1f5f9;color:#475569}
+.fp{font-family:Consolas,Menlo,monospace;font-size:11px;word-break:break-all;max-width:220px}
 """

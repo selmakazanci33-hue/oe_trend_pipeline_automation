@@ -115,9 +115,9 @@ class BoundingTests(unittest.TestCase):
         self.assertTrue(entry.structure_changed)
         self.assertEqual(entry.structure.filter_count, 4)
 
-    def test_irrelevant_widgets_summarized_not_retained(self):
+    def test_in_scope_widgets_retained_for_inventory(self):
         (entry,) = observe(single("w9", "Average Age")).entries()
-        self.assertIsNone(entry.latest_request)
+        self.assertIsNotNone(entry.latest_request)
         self.assertEqual(entry.structure.widget_title, "Average Age")
 
     def test_widget_and_retention_limits(self):

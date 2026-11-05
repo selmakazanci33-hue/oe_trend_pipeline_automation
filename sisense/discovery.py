@@ -19,13 +19,21 @@ from typing import Any, Iterable, Mapping
 from playwright.sync_api import BrowserContext, Request
 
 from config.settings import VERIFIED_JAQL_URL
-from sisense.passive import ExpectedWidgetQuery, _request_payload, check_candidate, split_reference
+from sisense.passive import (
+    ExpectedWidgetQuery,
+    _request_payload,
+    check_candidate,
+    definition_fingerprint,
+    split_reference,
+)
 from validation.validators import extract_count_measure_value, parse_json_body
 
 logger = logging.getLogger(__name__)
 
 MAX_WIDGETS = 80
-MAX_RETAINED = 30
+# Inventory fingerprints and response shapes need the already-received Request.
+# Bound to the same cap as widget tracking so a full dashboard load can be inventoried.
+MAX_RETAINED = MAX_WIDGETS
 
 SHAPE_SINGLE = "SINGLE_INDICATOR"
 SHAPE_MULTI_MEASURE = "MULTI_MEASURE"
@@ -65,6 +73,17 @@ class Column:
 
 
 @dataclass(frozen=True)
+class MetadataRole:
+    """Safe role of one metadata item. No filter members, no formulas."""
+
+    panel: str
+    kind: str
+    jaql_type: str | None
+    title: str | None
+    date_level: str | None
+
+
+@dataclass(frozen=True)
 class WidgetStructure:
     """Safe structural metadata from a dashboard request body; no filter values, no formulas."""
 
@@ -77,6 +96,8 @@ class WidgetStructure:
     columns: tuple[Column, ...]
     filter_count: int
     dashboard_filter_count: int
+    metadata_item_count: int = 0
+    metadata_roles: tuple[MetadataRole, ...] = ()
 
     @property
     def measures(self) -> tuple[Column, ...]:
@@ -85,6 +106,13 @@ class WidgetStructure:
     @property
     def dimensions(self) -> tuple[Column, ...]:
         return tuple(c for c in self.columns if c.kind == "dimension")
+
+    @property
+    def date_grain(self) -> str | None:
+        dates = [c for c in self.dimensions if c.is_date]
+        if len(dates) != 1:
+            return None
+        return dates[0].level
 
 
 def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | None:
@@ -97,19 +125,23 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
     metadata = payload.get("metadata")
     items = [item for item in metadata if isinstance(item, Mapping)] if isinstance(metadata, list) else []
     columns = []
+    roles = []
     filters = 0
     dashboard_filters = 0
     for item in items:
         jaql = item.get("jaql") if isinstance(item.get("jaql"), Mapping) else {}
+        title = jaql.get("title") if isinstance(jaql.get("title"), str) else None
+        jaql_type = jaql.get("type") if isinstance(jaql.get("type"), str) else None
+        level = jaql.get("level") if isinstance(jaql.get("level"), str) else None
         if item.get("panel") == "scope":
             filters += 1
             dashboard_filters += jaql.get("isDashboardFilter") is True
+            roles.append(MetadataRole("scope", "filter", jaql_type, title, level))
             continue
-        title = jaql.get("title") if isinstance(jaql.get("title"), str) else None
         kind = "measure" if jaql.get("type") == "measure" or "formula" in jaql else "dimension"
         datatype = jaql.get("datatype") if isinstance(jaql.get("datatype"), str) else None
-        level = jaql.get("level") if isinstance(jaql.get("level"), str) else None
         columns.append(Column(title, kind, datatype, level))
+        roles.append(MetadataRole("result", kind, jaql_type, title, level))
     datasource = payload.get("datasource") if isinstance(payload.get("datasource"), Mapping) else {}
     widget_type = payload.get("widgetType")
     return WidgetStructure(
@@ -122,6 +154,8 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
         columns=tuple(columns),
         filter_count=filters,
         dashboard_filter_count=dashboard_filters,
+        metadata_item_count=len(items),
+        metadata_roles=tuple(roles),
     )
 
 
@@ -198,11 +232,12 @@ class DiscoveryObserver:
         return sum(entry.latest_request is not None for entry in self._widgets.values())
 
     def _relevant(self, structure: WidgetStructure) -> bool:
-        return (
-            structure.widget_id == self._verified_widget_id
-            or bool(title_matches(structure, self.target_labels))
-            or bool(structure.dimensions)
-        )
+        """Retain every in-scope widget so discovery can inventory structure without extra HTTP.
+
+        Production binding still uses exact measure titles. Label match is not required
+        to keep a naturally observed request for the safe inventory.
+        """
+        return structure is not None
 
     def _on_request_finished(self, request: Request) -> None:
         if not self.is_target(request):
@@ -318,6 +353,7 @@ class WidgetDiscovery:
     title_matches: Mapping[str, tuple[str, ...]]
     response: ResponseSummary | None
     control: str | None = None
+    definition_fingerprint: str | None = None
 
     @property
     def matches(self) -> dict[str, tuple[str, ...]]:
@@ -384,13 +420,17 @@ def evaluate_discovery(observer: DiscoveryObserver, expected: ExpectedWidgetQuer
         matches = title_matches(entry.structure, observer.target_labels)
         response = None
         control = None
+        fingerprint = None
         if entry.latest_request is not None:
+            payload = _request_payload(entry.latest_request)
+            if payload is not None:
+                fingerprint = definition_fingerprint(payload)
             status, text = _read_response(entry.latest_request)
             response = summarize_response(status, text, entry.structure, observer.target_labels)
             if expected is not None and entry.structure.widget_id == expected.widget_id:
                 control = _control_check(entry.latest_request, status, text, expected)
         widgets.append(WidgetDiscovery(entry.structure, entry.observations, entry.structure_changed,
-                                       matches, response, control))
+                                       matches, response, control, fingerprint))
     return DiscoveryResult(
         widgets=tuple(widgets),
         target_requests_seen=observer.target_requests_seen,

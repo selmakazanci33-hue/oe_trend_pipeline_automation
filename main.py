@@ -56,6 +56,7 @@ from metrics.catalog import (
     DISCOVERY_TARGETS,
     passive_metrics,
 )
+from metrics.cancellation_identification import identify_cancellation_sources
 from metrics.discovery import resolve_targets
 from metrics.fingerprint_evidence import OBSERVATIONS_FILE, collect_evidence, production_passive_metrics
 from metrics.passive_metrics import (
@@ -466,6 +467,7 @@ class DiscoveryOutcome:
     report_path: Path | None
     counts: dict[str, int]
     runtime: RuntimeCapture | None = None
+    identification: tuple = ()
 
 
 def run_discovery(
@@ -493,7 +495,13 @@ def run_discovery(
             path = write_discovery_report(metrics, result, settings.reports_dir, datetime.now(timezone.utc))
             logger.info("Wave 1 discovery report: %s", path)
         runtime = capture_runtime_values(observer, metrics, expected) if settings.runtime_validation else None
-        return DiscoveryOutcome(path, counts, runtime)
+        identification = identify_cancellation_sources(result)
+        if identification:
+            logger.info(
+                "Cancellation source identification: %s",
+                ", ".join(f"{c.semantic_role}/{c.confidence} ({c.widget_id})" for c in identification),
+            )
+        return DiscoveryOutcome(path, counts, runtime, identification)
     except Exception as exc:
         observer.stop()
         logger.error("Wave 1 discovery failed: %s", type(exc).__name__)
@@ -539,7 +547,8 @@ def finish_runtime_validation(
     path = None
     if settings.reports_dir is not None:
         try:
-            path = write_validation_report(capture.rows, control, settings.reports_dir, now, evidence)
+            path = write_validation_report(capture.rows, control, settings.reports_dir, now, evidence,
+                                          outcome.identification)
         except Exception as exc:
             logger.error("Could not write the runtime validation report: %s", type(exc).__name__)
     print()
@@ -565,6 +574,10 @@ def finish_runtime_validation(
                   f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}")
         print(f"    Fingerprint observation: "
               f"{'RECORDED' if evidence.observation_recorded else evidence.observation_note}")
+    if outcome.identification:
+        print("  Cancellation source identification (structure only; not production)")
+        for c in outcome.identification:
+            print(f"    {c.widget_id:<24}{c.semantic_role:<32}{c.confidence}")
     print(f"  Report: {path if path else 'not written'}")
     print()
     print(RULE)
@@ -576,6 +589,8 @@ def print_discovery_summary(outcome: DiscoveryOutcome) -> None:
     print("Wave 1 discovery (developer review only — not used for snapshots or the executive report)")
     for state, count in outcome.counts.items():
         print(f"  {state:<12}{count}")
+    if outcome.identification:
+        print(f"  Identification {len(outcome.identification)} cancellation source candidate(s)")
     print(f"  Report      {outcome.report_path if outcome.report_path else 'not written (no reports directory)'}")
     print()
     print(RULE)

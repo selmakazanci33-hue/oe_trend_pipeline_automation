@@ -38,9 +38,28 @@ from reporting.formatting import (
     fmt_time,
 )
 from reporting.model import DATA_LIVE, DATA_NOT_AVAILABLE, DATA_PARTIAL, DATA_STALE, MetricPanel, ReportModel
+from history.store import WRITE_DUPLICATE_SLOT
 from reporting.series_semantics import CURRENTLY_ENROLLED_SNAPSHOT_TREND, SeriesIdentity
 
 LATEST_REPORT = Path("latest") / "index.html"
+
+def history_capture_label(status: str | None, granularity: str = "hour") -> str | None:
+    """Production wording for snapshot-write status. Storage codes stay in developer logs."""
+    if status != WRITE_DUPLICATE_SLOT:
+        return status
+    if granularity == "hour":
+        return "Already captured this hour"
+    return "Already captured for this period"
+
+
+def _history_status(status: str | None, granularity: str) -> str:
+    if not status:
+        return '<span class="muted">Not written</span>'
+    if status == WRITE_DUPLICATE_SLOT:
+        return (f'<span class="badge badge-stale">History: '
+                f'{escape(history_capture_label(status, granularity))}</span>')
+    return _badge(status)
+
 
 BADGE_CLASSES = {
     "LIVE": "badge-live",
@@ -247,8 +266,7 @@ def _quality_section(model: ReportModel) -> str:
          + (f' <span class="muted">({escape(model.failure_type)})</span>' if model.failure_type else "")),
         ("Last Successful Retrieval", escape(fmt_time(model.last_successful_retrieval))),
         ("Latest Snapshot", escape(fmt_derived(model.analytics.latest_snapshot_time))),
-        ("Snapshot This Run", _badge(model.snapshot_write_status) if model.snapshot_write_status
-         else '<span class="muted">Not written</span>'),
+        ("Snapshot This Run", _history_status(model.snapshot_write_status, model.snapshot_granularity)),
         ("Historical Snapshot Count", escape(str(model.analytics.stored_snapshot_count))),
     ]
     body = "".join(f"<tr><th>{label}</th><td>{value}</td></tr>" for label, value in rows)
@@ -283,7 +301,7 @@ def _pending_view(module_id: str, title: str) -> str:
             f'{roadmap}</section>')
 
 
-def _panel_card(panel: MetricPanel) -> str:
+def _panel_card(panel: MetricPanel, granularity: str = "hour") -> str:
     metric = panel.metric
     latest = panel.latest
     head = (f'<div class="card-label">{escape(metric.display_name.upper())} {_badge(panel.data_status)} '
@@ -293,7 +311,7 @@ def _panel_card(panel: MetricPanel) -> str:
         return (f'<div class="card metric-card" data-metric="{escape(metric.metric_id)}">{head}'
                 f'<div class="metric-value muted">Not available</div>'
                 f'<div class="kpi-note">No validated value has been retrieved or stored yet{escape(reason)}.</div>'
-                f'{_panel_snapshot(panel)}</div>')
+                f'{_panel_snapshot(panel, granularity)}</div>')
     if panel.data_status == DATA_LIVE:
         note = f"Live value retrieved {fmt_time(latest.observed_at)}"
     else:
@@ -311,19 +329,23 @@ def _panel_card(panel: MetricPanel) -> str:
         change = f'<div class="metric-change muted">{escape(previous.change.reason or "Insufficient history")}</div>'
     return (f'<div class="card metric-card" data-metric="{escape(metric.metric_id)}">{head}'
             f'<div class="metric-value">{escape(fmt_metric_value(latest.value, metric.value_format))}</div>'
-            f'<div class="kpi-note">{escape(note)}</div>{change}{_panel_snapshot(panel)}</div>')
+            f'<div class="kpi-note">{escape(note)}</div>{change}{_panel_snapshot(panel, granularity)}</div>')
 
 
-def _panel_snapshot(panel: MetricPanel) -> str:
+def _panel_snapshot(panel: MetricPanel, granularity: str = "hour") -> str:
+    if panel.snapshot_write_status == WRITE_DUPLICATE_SLOT:
+        state = _history_status(panel.snapshot_write_status, granularity)
+        return (f'<div class="metric-snapshot">{state} '
+                f'<span class="muted">({panel.analytics.stored_snapshot_count} stored)</span></div>')
     state = _badge(panel.snapshot_write_status) if panel.snapshot_write_status else '<span class="muted">Not written</span>'
     return (f'<div class="metric-snapshot">Snapshot this run: {state} '
             f'<span class="muted">({panel.analytics.stored_snapshot_count} stored)</span></div>')
 
 
-def _panels_section(panels, title: str, section_id: str | None = None) -> str:
+def _panels_section(panels, title: str, section_id: str | None = None, granularity: str = "hour") -> str:
     if not panels:
         return ""
-    cards = "".join(_panel_card(p) for p in panels)
+    cards = "".join(_panel_card(p, granularity) for p in panels)
     attr = f' data-section="{escape(section_id)}"' if section_id else ""
     return (f'<section{attr}><div class="section-head"><h2>{escape(title)}</h2>'
             f'<span class="section-sub">Each metric carries its own status, timestamp and snapshot history</span></div>'
@@ -387,7 +409,8 @@ def _grouped_section(model: ReportModel, section) -> str:
     if not panels and not pending:
         return ""
     sub = f'<span class="section-sub">{escape(section.subtitle)}</span>' if section.subtitle else ""
-    cards = f'<div class="grid grid-4">{"".join(_panel_card(p) for p in panels)}</div>' if panels else ""
+    cards = (f'<div class="grid grid-4">{"".join(_panel_card(p, model.snapshot_granularity) for p in panels)}</div>'
+             if panels else "")
     chips = f'<ul class="roadmap compact">{_roadmap_chips(pending)}</ul>' if pending else ""
     kind = "pending-group" if not panels else "production-group"
     return (f'<section class="{kind}" data-section="{escape(section.section_id)}">'
@@ -402,13 +425,13 @@ def _module_view(model: ReportModel, module_id: str, title: str) -> str:
     pending = (f'<section class="card pending"><h2>Additional {escape(title)} Metrics</h2>'
                f'<p class="muted">{escape(PENDING_MESSAGE)}</p><ul class="roadmap">{_roadmap_chips(items)}</ul></section>'
                if items else "")
-    return _panels_section(panels, f"{title} Metrics") + pending
+    return _panels_section(panels, f"{title} Metrics", granularity=model.snapshot_granularity) + pending
 
 
 def _applications_view(model: ReportModel) -> str:
     panels = model.panels_for("applications")
     pending = _pending_items(model, "applications")
-    cards = "".join(_panel_card(p) for p in panels)
+    cards = "".join(_panel_card(p, model.snapshot_granularity) for p in panels)
     chips = f'<ul class="roadmap compact">{_roadmap_chips(pending)}</ul>' if pending else ""
     body = f'<div class="grid grid-4">{cards}</div>' if panels else ""
     return (f'<section data-section="applications_flow"><div class="section-head"><h2>Applications</h2></div>'
@@ -425,7 +448,7 @@ def _enrollment_view(model: ReportModel) -> str:
         f'<section data-section="{SECTION_CURRENT_ENROLLMENT}"><div class="section-head">'
         f"<h2>Current Enrollment</h2></div>{_kpi_section(model)}</section>"
         + _panels_section(_panels_in(model, SECTION_ENROLLMENT_METRICS), "Enrollment Metrics",
-                          SECTION_ENROLLMENT_METRICS)
+                          SECTION_ENROLLMENT_METRICS, model.snapshot_granularity)
         + grouped
         + _history_section(model)
         + _trend_section(model, "trend-chart-enrollment")
@@ -442,7 +465,8 @@ def render_html(model: ReportModel) -> str:
         nav.append(f'<button class="nav-item{" is-active" if module.module_id == "overview" else ""}" '
                    f'data-view="{escape(module.module_id)}">{escape(module.title)}{tag}</button>')
         if module.module_id == "overview":
-            content = (_kpi_section(model) + _panels_section(model.panels, "Key Metrics")
+            content = (_kpi_section(model) + _panels_section(model.panels, "Key Metrics",
+                                                             granularity=model.snapshot_granularity)
                        + _movement_section(model) + _trend_section(model, "trend-chart-overview")
                        + _quality_section(model))
         elif module.module_id == "enrollment":

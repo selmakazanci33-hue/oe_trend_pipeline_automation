@@ -102,7 +102,8 @@ class ReportingPipeline:
         return build_metric_panel(metric, store.snapshots(metric.metric_id, metric.plan_year), result, write, failure)
 
     def _report(self, outcome: RunOutcome, snapshots, panels: tuple[MetricPanel, ...] = ()) -> ReportingSummary:
-        model = build_report_model(self._metric, snapshots, outcome, generated_at=self._clock(), panels=panels)
+        model = build_report_model(self._metric, snapshots, outcome, generated_at=self._clock(), panels=panels,
+                                    snapshot_granularity=self._granularity)
         path = write_report(model, self._reports_dir)
         return ReportingSummary(
             data_status=model.data_status,

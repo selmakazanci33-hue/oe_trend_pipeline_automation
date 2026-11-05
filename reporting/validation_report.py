@@ -13,6 +13,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from metrics.cancellation_identification import CancellationSourceCandidate, candidate_document
 from metrics.catalog import VALUE_PERCENT
 from metrics.fingerprint_evidence import CandidateEvidence, EvidenceOutcome
 from metrics.runtime_validation import (
@@ -137,6 +138,25 @@ def evidence_document(outcome: EvidenceOutcome) -> dict[str, Any]:
     }
 
 
+def _identification_html(candidates: tuple[CancellationSourceCandidate, ...] | None) -> str:
+    if not candidates:
+        return ""
+    rows = "".join(
+        f"<tr><td>{_e(c.widget_title)}<div class=\"muted\">{_e(c.widget_id)}</div></td>"
+        f"<td>{_e(c.datasource)}</td><td>{_e(' | '.join(t or '—' for t in c.measure_titles))}</td>"
+        f"<td>{_e(' | '.join(t or '—' for t in c.dimension_titles))}</td><td>{_e(c.date_grain)}</td>"
+        f"<td>{_e(c.response_shape)}</td><td>{_e(c.semantic_role)}</td><td>{_e(c.confidence)}</td>"
+        f"<td class=\"fp\">{_e(c.fingerprint)}</td><td>{_e(c.reason)}</td></tr>"
+        for c in candidates
+    )
+    return f"""<section class="card"><h2>Cancellation Source Identification</h2>
+<p class="muted">Structural nomination from naturally observed JAQL. Display labels are not assumed
+to equal measure titles. STRUCTURAL_CANDIDATE is not production-verified. No values.</p>
+<table class="grid"><thead><tr><th>Widget</th><th>Datasource</th><th>Measure titles</th><th>Dimension titles</th>
+<th>Date grain</th><th>Shape</th><th>Role</th><th>Confidence</th><th>Fingerprint</th><th>Reason</th></tr></thead>
+<tbody>{rows}</tbody></table></section>"""
+
+
 def _evidence_html(outcome: EvidenceOutcome | None) -> str:
     if outcome is None:
         return ""
@@ -208,6 +228,7 @@ Nothing here is shown on the executive dashboard.</p>
 def validation_document(
     rows: tuple[RuntimeValue, ...], control: ControlComparison, generated_at: datetime,
     evidence: EvidenceOutcome | None = None,
+    identification: tuple[CancellationSourceCandidate, ...] | None = None,
 ) -> dict[str, Any]:
     document = {
         "generated_at_utc": generated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -248,6 +269,8 @@ def validation_document(
     }
     if evidence is not None:
         document["promotion_evidence"] = evidence_document(evidence)
+    if identification is not None:
+        document["cancellation_source_identification"] = candidate_document(identification)
     return document
 
 
@@ -258,6 +281,7 @@ def _e(value: Any) -> str:
 def render_validation_html(
     rows: tuple[RuntimeValue, ...], control: ControlComparison, generated_at: datetime,
     evidence: EvidenceOutcome | None = None,
+    identification: tuple[CancellationSourceCandidate, ...] | None = None,
 ) -> str:
     body = "".join(
         f"<tr><td>{_e(r.label)}</td><td>{_e(r.widget_title)}<div class=\"muted\">{_e(r.widget_id)}</div></td>"
@@ -294,6 +318,7 @@ fingerprint is a one-way hash of the widget request's dashboard, widget, datasou
 definitions (no filter values are shown); a fingerprint from a run whose values matched the UI is the
 evidence required to promote a validation-only metric.</p></section>
 {_evidence_html(evidence)}
+{_identification_html(identification)}
 </main></body></html>
 """
 
@@ -301,13 +326,14 @@ evidence required to promote a validation-only metric.</p></section>
 def write_validation_report(
     rows: tuple[RuntimeValue, ...], control: ControlComparison, reports_dir: Path, generated_at: datetime,
     evidence: EvidenceOutcome | None = None,
+    identification: tuple[CancellationSourceCandidate, ...] | None = None,
 ) -> Path:
     directory = Path(reports_dir) / VALIDATION_DIR
     directory.mkdir(parents=True, exist_ok=True)
     _atomic_write(directory / JSON_NAME,
-                  json.dumps(validation_document(rows, control, generated_at, evidence), indent=2))
+                  json.dumps(validation_document(rows, control, generated_at, evidence, identification), indent=2))
     html_path = directory / HTML_NAME
-    _atomic_write(html_path, render_validation_html(rows, control, generated_at, evidence))
+    _atomic_write(html_path, render_validation_html(rows, control, generated_at, evidence, identification))
     return html_path
 
 

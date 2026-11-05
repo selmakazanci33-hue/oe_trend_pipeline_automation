@@ -79,6 +79,7 @@ class ReportModel:
     roadmap: tuple[RoadmapItem, ...]
     panels: tuple["MetricPanel", ...] = ()
     last_successful_retrieval: datetime | None = None
+    snapshot_granularity: str = "hour"
 
     @property
     def kpi(self) -> DataPoint | None:
@@ -138,6 +139,7 @@ def build_report_model(
     outcome: RunOutcome,
     generated_at: datetime,
     panels: tuple[MetricPanel, ...] = (),
+    snapshot_granularity: str = "hour",
 ) -> ReportModel:
     current: DataPoint | None = None
     if outcome.succeeded:
@@ -178,5 +180,6 @@ def build_report_model(
         generated_at=generated_at,
         modules=MODULES,
         roadmap=ROADMAP,
+        snapshot_granularity=snapshot_granularity,
         panels=tuple(panels),
     )

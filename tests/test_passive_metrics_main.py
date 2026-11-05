@@ -143,7 +143,13 @@ class PassiveMetricsMainTests(PassiveMetricsHarness):
         self.assertEqual(code, app.EXIT_OK)
         self.assertEqual(self.rows("percent_effectuated"), [0.911111])
         self.assertIn("snapshot DUPLICATE_SLOT", out)
-        self.assertIn("92.22%", self.card("percent_effectuated"))
+        html = self.report_html()
+        self.assertNotIn("DUPLICATE_SLOT", html)
+        self.assertIn("History: Already captured this hour", html)
+        card = self.card("percent_effectuated")
+        self.assertIn("92.22%", card)
+        self.assertIn('class="badge badge-live"', card)
+        self.assertIn('class="badge badge-source"', card)
 
     def test_no_backfill_and_currently_enrolled_history_intact(self):
         self.run_pipeline(800000, at=RUN_TIME - timedelta(days=3))

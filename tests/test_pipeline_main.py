@@ -126,7 +126,10 @@ class PipelineMainTests(PipelineHarness):
         self.assertEqual(code, app.EXIT_OK)
         self.assertEqual([s.metric_value for s in self.snapshots()], [812345])
         self.assertIn("SKIPPED (DUPLICATE_SLOT", out)
-        self.assertIn("812,999", self.report_html())
+        html = self.report_html()
+        self.assertIn("812,999", html)
+        self.assertNotIn("DUPLICATE_SLOT", html)
+        self.assertIn("History: Already captured this hour", html)
 
     def test_failed_retrieval_creates_no_snapshot(self):
         for status in (401, 403, 500):

@@ -9,7 +9,8 @@ from tests.test_pipeline_main import RUN_TIME
 from tests.test_runtime_validation import natural_wave1
 
 DEVELOPER_TERMS = ("VERIFIED", "Verified", "DISCOVERED", "VALUE_EXTRACTED", "NOT_AVAILABLE", "VALIDATION",
-                   "fingerprint", "sha256", "NO HISTORY", "6a98048ccef60720fe7f9b", "w-start", "w-nap")
+                   "fingerprint", "sha256", "NO HISTORY", "6a98048ccef60720fe7f9b", "w-start", "w-nap",
+                   "DUPLICATE_SLOT")
 VALIDATION_ONLY = {"started": 400_101, "submitted": 400_202, "applicants": 400_303,
                    "new": 4_404, "active": 40_505, "passive": 400_606}
 
@@ -60,7 +61,8 @@ class ExecutiveReportConsistencyTests(PassiveMetricsHarness):
         self.assertIn("(1 stored)", card)
         quality = html.split("Data Freshness &amp; Quality")[1]
         self.assertIn('<span class="section-sub">Currently Enrolled People</span>', quality)
-        self.assertIn("DUPLICATE_SLOT", quality.split("</section>")[0])
+        self.assertIn("History: Already captured this hour", quality.split("</section>")[0])
+        self.assertNotIn("DUPLICATE_SLOT", quality.split("</section>")[0])
 
     def test_histories_are_metric_specific_and_changes_in_points(self):
         self.run_pipeline(700_000, self.ce_widget(ce=700_000, pct=0.901234), at=RUN_TIME - timedelta(hours=4))
