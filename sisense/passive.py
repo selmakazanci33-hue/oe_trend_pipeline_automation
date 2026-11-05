@@ -8,6 +8,7 @@ inspected in memory only and are never logged or persisted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -112,6 +113,26 @@ def query_shape(payload: Mapping[str, Any]) -> QueryShape:
         measure_titles=tuple((item.get("jaql") or {}).get("title") for item in measures),
         scope_filters=tuple(sorted(_scope_filter(item) for item in items if item.get("panel") == "scope")),
     )
+
+
+def definition_fingerprint(payload: Mapping[str, Any]) -> str:
+    """One-way hash of a request's business definition, safe to persist and compare.
+
+    Covers dashboard id, widget id, datasource, every measure definition (in
+    order) and the scope-filter multiset, normalized exactly as ``check_candidate``
+    compares them; volatile fields (queryGuid, instanceid, formatting) are
+    excluded. Raw filter values never leave memory.
+    """
+    shape = query_shape(payload)
+    material = {
+        "dashboard": shape.dashboard[0] if shape.dashboard else None,
+        "widget": shape.widget[0] if shape.widget else None,
+        "datasource": list(shape.datasource),
+        "measures": list(shape.measures),
+        "scope_filters": list(shape.scope_filters),
+    }
+    digest = hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return f"sha256:{digest.hexdigest()}"
 
 
 @dataclass(frozen=True)

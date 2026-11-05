@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from metrics.catalog import (
+    PROMOTION_CANDIDATES,
     RUNTIME_VALIDATION_TARGETS,
     STATE_DISCOVERED,
     STATE_PENDING,
+    STATE_VERIFIED,
     VALUE_COUNT,
     WAVE1_TARGETS,
     RuntimeValidationTarget,
@@ -30,7 +32,7 @@ from sisense.discovery import (
     verified_widget_value,
 )
 from sisense.models import InvalidJaqlPayloadError, ResponseValidationError
-from sisense.passive import ExpectedWidgetQuery, _request_payload, split_reference
+from sisense.passive import ExpectedWidgetQuery, _request_payload, definition_fingerprint, split_reference
 from validation.validators import extract_measure_value, parse_json_body, result_measure_titles
 
 RV_VALUE_EXTRACTED = "VALUE_EXTRACTED"
@@ -71,12 +73,15 @@ class RuntimeValue:
     http_status: int | None = None
     binding: str | None = None
     reason: str | None = None
+    definition_fingerprint: str | None = None
 
     @property
     def production_status(self) -> str:
         """Catalog status, unchanged by runtime validation."""
         if catalog_state(self.metric_id) != STATE_PENDING:
             return catalog_state(self.metric_id)
+        if self.metric_id in PROMOTION_CANDIDATES:
+            return "VALIDATION ONLY — awaiting verified filter fingerprint"
         if self.metric_id in _RUNTIME_TARGET_IDS:
             return f"{STATE_DISCOVERED} — awaiting UI verification"
         return STATE_PENDING
@@ -161,7 +166,7 @@ def validate_runtime_values(
     for target in targets:
         metric = by_id.get(target.metric_id)
         label = _LABELS[target.metric_id]
-        if metric is None or metric.state != STATE_DISCOVERED or metric.widget is None:
+        if metric is None or metric.state not in (STATE_DISCOVERED, STATE_VERIFIED) or metric.widget is None:
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, value_kind=target.value_kind,
                                      reason=f"Not DISCOVERED in this run: {metric.reason if metric else 'not observed'}"))
             continue
@@ -181,6 +186,7 @@ def validate_runtime_values(
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **common,
                                      reason="Dashboard request not retained"))
             continue
+        common["definition_fingerprint"] = definition_fingerprint(payload)
         status, text = _read_response(request)
         if status != 200:
             rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **{**common, "http_status": status},

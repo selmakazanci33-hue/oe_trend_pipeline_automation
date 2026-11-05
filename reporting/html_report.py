@@ -17,8 +17,19 @@ from plotly.offline import get_plotlyjs
 
 from analytics.derived import DERIVED, SOURCE, Comparison, DerivedValue
 from metrics.catalog import PENDING_MESSAGE, STATUS_ACTIVE, roadmap_for
-from reporting.formatting import ARROWS, direction, fmt_comparison, fmt_derived, fmt_int, fmt_pct, fmt_signed, fmt_time
-from reporting.model import DATA_LIVE, DATA_NO_HISTORY, DATA_STALE, ReportModel
+from reporting.formatting import (
+    ARROWS,
+    direction,
+    fmt_comparison,
+    fmt_derived,
+    fmt_int,
+    fmt_metric_change,
+    fmt_metric_value,
+    fmt_pct,
+    fmt_signed,
+    fmt_time,
+)
+from reporting.model import DATA_LIVE, DATA_NO_HISTORY, DATA_STALE, MetricPanel, ReportModel
 
 LATEST_REPORT = Path("latest") / "index.html"
 
@@ -27,6 +38,7 @@ BADGE_CLASSES = {
     "PASS": "badge-pass",
     "STALE": "badge-stale",
     "NO HISTORY": "badge-none",
+    "NOT AVAILABLE": "badge-error",
     "ERROR": "badge-error",
     "SAVED": "badge-pass",
     "DUPLICATE_SLOT": "badge-stale",
@@ -219,22 +231,83 @@ def _banner(model: ReportModel) -> str:
     return ""
 
 
+def _roadmap_chips(items) -> str:
+    return "".join(
+        f'<li><span>{escape(i.name)}'
+        + (f'<span class="roadmap-note">{escape(i.note)}</span>' if i.note else "")
+        + '</span><span class="badge badge-none">PENDING</span></li>'
+        for i in items
+    )
+
+
 def _pending_view(module_id: str, title: str) -> str:
     items = roadmap_for(module_id)
-    chips = "".join(f'<li><span>{escape(i.name)}</span><span class="badge badge-none">PENDING</span></li>'
-                    for i in items)
-    roadmap = f'<ul class="roadmap">{chips}</ul>' if items else ""
+    roadmap = f'<ul class="roadmap">{_roadmap_chips(items)}</ul>' if items else ""
     return (f'<section class="card pending"><h2>{escape(title)}</h2><p class="muted">{escape(PENDING_MESSAGE)}</p>'
             f'{roadmap}</section>')
 
 
+def _panel_card(panel: MetricPanel) -> str:
+    metric = panel.metric
+    latest = panel.latest
+    head = (f'<div class="card-label">{escape(metric.display_name.upper())} {_badge(panel.data_status)} '
+            f'{_badge(SOURCE)}</div>')
+    if latest is None:
+        reason = f" ({panel.failure})" if panel.failure else ""
+        return (f'<div class="card metric-card" data-metric="{escape(metric.metric_id)}">{head}'
+                f'<div class="metric-value muted">Not available</div>'
+                f'<div class="kpi-note">No validated value has been retrieved or stored yet{escape(reason)}.</div></div>')
+    if panel.data_status == DATA_LIVE:
+        note = f"Live value retrieved {fmt_time(latest.observed_at)}"
+    else:
+        note = f"Historical value — last successful snapshot {fmt_time(latest.observed_at)}"
+        if panel.failure:
+            note += f" (this run: {panel.failure})"
+    previous = panel.analytics.previous
+    if previous.available:
+        dir_ = direction(previous.change.value)
+        change = (f'<div class="metric-change {dir_}">{ARROWS[dir_]} '
+                  f'{escape(fmt_metric_change(previous.change.value, metric.value_format))} '
+                  f'<span class="muted">since previous snapshot ({escape(fmt_time(previous.change.reference.observed_at))})'
+                  f'</span> {_badge(DERIVED)}</div>')
+    else:
+        change = f'<div class="metric-change muted">{escape(previous.change.reason or "Insufficient history")}</div>'
+    return (f'<div class="card metric-card" data-metric="{escape(metric.metric_id)}">{head}'
+            f'<div class="metric-value">{escape(fmt_metric_value(latest.value, metric.value_format))}</div>'
+            f'<div class="kpi-note">{escape(note)}</div>{change}</div>')
+
+
+def _panels_section(panels, title: str) -> str:
+    if not panels:
+        return ""
+    cards = "".join(_panel_card(p) for p in panels)
+    return (f'<section><div class="section-head"><h2>{escape(title)}</h2>'
+            f'<span class="section-sub">Verified dashboard metrics; each carries its own status</span></div>'
+            f'<div class="grid grid-4">{cards}</div></section>')
+
+
+def _pending_items(model: ReportModel, module_id: str):
+    verified = {p.metric.display_name for p in model.panels} | {model.metric.display_name}
+    return [i for i in roadmap_for(module_id) if i.name not in verified]
+
+
+def _module_view(model: ReportModel, module_id: str, title: str) -> str:
+    panels = model.panels_for(module_id)
+    if not panels:
+        return _pending_view(module_id, title)
+    items = _pending_items(model, module_id)
+    pending = (f'<section class="card pending"><h2>Additional {escape(title)} Metrics</h2>'
+               f'<p class="muted">{escape(PENDING_MESSAGE)}</p><ul class="roadmap">{_roadmap_chips(items)}</ul></section>'
+               if items else "")
+    return _panels_section(panels, f"{title} Metrics") + pending
+
+
 def _enrollment_view(model: ReportModel) -> str:
     metric = model.metric
-    roadmap = roadmap_for("enrollment")
-    chips = "".join(f'<li><span>{escape(i.name)}</span><span class="badge badge-none">PENDING</span></li>'
-                    for i in roadmap)
+    chips = _roadmap_chips(_pending_items(model, "enrollment"))
     return (
         _kpi_section(model)
+        + _panels_section(model.panels_for("enrollment"), "Enrollment Metrics")
         + f'<section class="card"><div class="section-head"><h2>Metric Definition</h2></div><table class="kv">'
           f'<tr><th>Metric</th><td>{escape(metric.display_name)} {_badge(SOURCE)}</td></tr>'
           f'<tr><th>Category</th><td>{escape(metric.category)}</td></tr>'
@@ -258,12 +331,12 @@ def render_html(model: ReportModel) -> str:
         nav.append(f'<button class="nav-item{" is-active" if module.module_id == "overview" else ""}" '
                    f'data-view="{escape(module.module_id)}">{escape(module.title)}{tag}</button>')
         if module.module_id == "overview":
-            content = (_kpi_section(model) + _movement_section(model) + _trend_section()
-                       + _quality_section(model))
+            content = (_kpi_section(model) + _panels_section(model.panels, "Verified Dashboard Metrics")
+                       + _movement_section(model) + _trend_section() + _quality_section(model))
         elif module.module_id == "enrollment":
             content = _enrollment_view(model)
         else:
-            content = _pending_view(module.module_id, module.title)
+            content = _module_view(model, module.module_id, module.title)
         hidden = "" if module.module_id == "overview" else " hidden"
         views.append(f'<div class="view" id="view-{escape(module.module_id)}"{hidden}>'
                      f'<h1 class="view-title">{escape(module.title)}</h1>{content}</div>')
@@ -401,6 +474,9 @@ table{width:100%;border-collapse:collapse}.kv th{text-align:left;width:38%;color
 .roadmap{list-style:none;padding:0;margin:14px 0 0;display:grid;gap:8px;
 grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}.roadmap li{display:flex;justify-content:space-between;
 align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fafbfd}
+.roadmap-note{display:block;font-size:12px;color:var(--muted);margin-top:4px}
+.metric-value{font-size:34px;font-weight:800;color:var(--navy);line-height:1.15;margin-top:8px;font-variant-numeric:tabular-nums}
+.metric-value.muted{font-size:20px;color:var(--muted)}.metric-change{margin-top:10px;font-weight:700;font-size:14px}
 footer{font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 @media (max-width:860px){.layout{grid-template-columns:1fr}.sidebar{flex-direction:row;overflow-x:auto;
 border-right:0;border-bottom:1px solid var(--line)}.nav-item{white-space:nowrap}.kpi-value{font-size:42px}}

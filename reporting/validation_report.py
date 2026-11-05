@@ -67,6 +67,7 @@ def validation_document(
                 "extraction_status": r.status,
                 "production_status": r.production_status,
                 "reason": r.reason,
+                "definition_fingerprint": r.definition_fingerprint,
             }
             for r in rows
         ],
@@ -91,7 +92,8 @@ def render_validation_html(
         f"<tr><td>{_e(r.label)}</td><td>{_e(r.widget_title)}<div class=\"muted\">{_e(r.widget_id)}</div></td>"
         f"<td>{_e(r.shape)}</td><td>{_e(r.http_status)}</td><td class=\"num\">{_e(format_runtime_value(r))}</td>"
         f"<td><span class=\"badge {_STATUS_CLASS.get(r.status, 'pending')}\">{_e(r.status)}</span></td>"
-        f"<td>{_e(r.production_status)}</td><td>{_e(r.binding)}<div class=\"muted\">{_e(r.reason) if r.reason else ''}</div></td></tr>"
+        f"<td>{_e(r.production_status)}</td><td>{_e(r.binding)}<div class=\"muted\">{_e(r.reason) if r.reason else ''}</div></td>"
+        f"<td class=\"fp\">{_e(r.definition_fingerprint)}</td></tr>"
         for r in rows
     )
     difference = control.difference
@@ -113,10 +115,13 @@ for comparison with the Sisense UI. Not stored in history; not shown in the exec
 </table></section>
 <section class="card"><h2>Discovered metrics</h2>
 <table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Shape</th><th>HTTP</th><th>Runtime Value</th>
-<th>Extraction Status</th><th>Production Status</th><th>Binding / Reason</th></tr></thead>
+<th>Extraction Status</th><th>Production Status</th><th>Binding / Reason</th><th>Definition Fingerprint</th></tr></thead>
 <tbody>{body}</tbody></table>
 <p class="muted">VALUE_EXTRACTED means the value was bound to its exact measure definition and passed type checks.
-It does not make a metric VERIFIED; promotion requires explicit approval after UI comparison.</p></section>
+It does not make a metric VERIFIED; promotion requires explicit approval after UI comparison. The definition
+fingerprint is a one-way hash of the widget request's dashboard, widget, datasource, measure and filter
+definitions (no filter values are shown); a fingerprint from a run whose values matched the UI is the
+evidence required to promote a validation-only metric.</p></section>
 </main></body></html>
 """
 
@@ -143,5 +148,6 @@ vertical-align:top}.grid th{font-size:12px;text-transform:uppercase;color:#6b7c9
 .kv th{width:260px;text-align:left;font-weight:600;padding:5px 8px 5px 0;color:#6b7c93}.kv td{padding:5px 0}
 .muted{color:#6b7c93;font-size:12px}.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
 .badge.ok{background:#dcfce7;color:#166534}.badge.na{background:#fef3c7;color:#92400e}.badge.fail{background:#fee2e2;color:#991b1b}
-.badge.pending{background:#f1f5f9;color:#475569}
+.badge.pending{background:#f1f5f9;color:#475569}.fp{font-family:Consolas,Menlo,monospace;font-size:11px;word-break:break-all;
+max-width:220px}
 """

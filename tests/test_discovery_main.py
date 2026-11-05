@@ -46,9 +46,9 @@ class DiscoveryMainTests(PipelineHarness):
         doc = json.loads(json_path.read_text(encoding="utf-8"))
         states = {m["metric_id"]: m["state"] for m in doc["metrics"]}
         self.assertEqual(states, {
-            "currently_enrolled_people": "VERIFIED", "pct_effectuated": "DISCOVERED",
+            "currently_enrolled_people": "VERIFIED", "percent_effectuated": "VERIFIED",
             "applications_started": "DISCOVERED", "submitted_applications": "DISCOVERED",
-            "new": "DISCOVERED", "active": "DISCOVERED", "passive": "DISCOVERED",
+            "new_enrolled": "DISCOVERED", "active_enrolled": "DISCOVERED", "passive_enrolled": "DISCOVERED",
             "total_applicants": "PENDING", "cancelled": "PENDING", "terminated": "PENDING",
         })
         shapes = {w["widget_id"]: w["response"]["shape"] for w in doc["widgets"]}

@@ -17,6 +17,24 @@ def fmt_pct(value: float) -> str:
     return f"{value:+.2f}%"
 
 
+def fmt_ratio_pct(ratio: float) -> str:
+    """Raw ratio as a percentage for presentation only, e.g. 0.5 -> '50.00%'."""
+    return f"{ratio * 100:.2f}%"
+
+
+def fmt_pp(ratio_change: float) -> str:
+    """Change between two ratios in percentage points, e.g. 0.0032 -> '+0.32 pp'."""
+    return f"{ratio_change * 100:+.2f} pp"
+
+
+def fmt_metric_value(value: int | float, value_format: str) -> str:
+    return fmt_ratio_pct(value) if value_format == "percent" else fmt_int(value)
+
+
+def fmt_metric_change(change: int | float, value_format: str) -> str:
+    return fmt_pp(change) if value_format == "percent" else fmt_signed(change)
+
+
 def fmt_time(moment: datetime | None) -> str:
     if moment is None:
         return "—"

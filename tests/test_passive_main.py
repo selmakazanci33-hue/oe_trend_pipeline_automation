@@ -61,10 +61,11 @@ class PassiveProofMainTests(PipelineHarness):
         self.run_proof(812345, self.widget_request(812345), self.widget_request(812345))
         conn = sqlite3.connect(self.db)
         try:
-            rows = conn.execute("SELECT run_id, metric_value FROM metric_snapshots").fetchall()
+            rows = conn.execute("SELECT metric_id, metric_value FROM metric_snapshots ORDER BY id").fetchall()
         finally:
             conn.close()
-        self.assertEqual([value for _, value in rows], [812345])
+        # Only the application value for Currently Enrolled; % Effectuated is its own verified metric.
+        self.assertEqual(rows, [("currently_enrolled_people", 812345), ("percent_effectuated", 0.97)])
 
     def test_filter_mismatch_fails_without_extra_request(self):
         mutate = lambda b: scope(b, "coverage_year")["jaql"]["filter"].update(members=["2026"])

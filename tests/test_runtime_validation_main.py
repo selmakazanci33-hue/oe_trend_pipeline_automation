@@ -59,7 +59,7 @@ class RuntimeValidationMainTests(PipelineHarness):
     def test_executive_report_unchanged(self):
         self.run_validation()
         with_validation = self.report_html()
-        for value in ("400,002", "300,003", "500,004", "100,005", "200,006", "300,007", "97.00%"):
+        for value in ("400,002", "300,003", "500,004", "100,005", "200,006", "300,007"):
             self.assertNotIn(value, with_validation)
         shutil.rmtree(self.root / "data")
         shutil.rmtree(self.reports)

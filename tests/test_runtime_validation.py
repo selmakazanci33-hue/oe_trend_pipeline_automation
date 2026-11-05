@@ -61,26 +61,28 @@ class SevenMetricExtractionTests(unittest.TestCase):
         expected = {"applications_started": (400_002, BINDING_MEASURE_TITLE),
                     "submitted_applications": (300_003, BINDING_SINGLE_MEASURE_WIDGET),
                     "total_applicants": (500_004, BINDING_MEASURE_TITLE),
-                    "new": (100_005, BINDING_MEASURE_TITLE),
-                    "active": (200_006, BINDING_MEASURE_TITLE),
-                    "passive": (300_007, BINDING_MEASURE_TITLE),
-                    "pct_effectuated": (0.97, BINDING_MEASURE_TITLE)}
+                    "new_enrolled": (100_005, BINDING_MEASURE_TITLE),
+                    "active_enrolled": (200_006, BINDING_MEASURE_TITLE),
+                    "passive_enrolled": (300_007, BINDING_MEASURE_TITLE),
+                    "percent_effectuated": (0.97, BINDING_MEASURE_TITLE)}
         for metric_id, (value, binding) in expected.items():
             with self.subTest(metric_id):
                 row = rows[metric_id]
                 self.assertEqual(row.status, RV_VALUE_EXTRACTED, row.reason)
                 self.assertEqual(row.value, value)
                 self.assertEqual(row.binding, binding)
-                self.assertEqual(row.production_status, "DISCOVERED — awaiting UI verification")
-        self.assertIsInstance(rows["new"].value, int)
+                self.assertEqual(row.production_status, "VERIFIED" if metric_id == "percent_effectuated"
+                                 else "VALIDATION ONLY — awaiting verified filter fingerprint")
+                self.assertTrue(row.definition_fingerprint.startswith("sha256:"))
+        self.assertIsInstance(rows["new_enrolled"].value, int)
         self.assertEqual(rows["total_applicants"].widget_title, "Applicants On Submitted Applications")
-        self.assertEqual(rows["new"].shape, "MULTI_MEASURE")
+        self.assertEqual(rows["new_enrolled"].shape, "MULTI_MEASURE")
 
     def test_effectuated_never_substitutes_currently_enrolled(self):
         rows, _ = runtime_rows(*natural_wave1())
-        self.assertNotEqual(rows["pct_effectuated"].value, 700_001)
-        self.assertTrue(rows["pct_effectuated"].percent_format)
-        self.assertEqual(format_runtime_value(rows["pct_effectuated"]), "97.00% (raw 0.97)")
+        self.assertNotEqual(rows["percent_effectuated"].value, 700_001)
+        self.assertTrue(rows["percent_effectuated"].percent_format)
+        self.assertEqual(format_runtime_value(rows["percent_effectuated"]), "97.00% (raw 0.97)")
         swapped = response_text(700_001, {"headers": ["% Effectuated", "Currently Enrolled People"]})
         status, value, _, _ = extract_runtime_value(payload(), swapped, "% Effectuated", VALUE_PERCENT)
         self.assertEqual((status, value), (RV_VALIDATION_FAILED, None))
@@ -91,8 +93,8 @@ class SevenMetricExtractionTests(unittest.TestCase):
     def test_effectuated_requires_strict_control_pass(self):
         changed = payload(lambda b: scope(b, "coverage_year")["jaql"]["filter"].update(members=["2026"]))
         rows, observer = runtime_rows(PassiveRequest(changed, text=response_text(5)), *natural_wave1()[1:])
-        self.assertEqual(rows["pct_effectuated"].status, RV_VALIDATION_FAILED)
-        self.assertIn("strict control check", rows["pct_effectuated"].reason)
+        self.assertEqual(rows["percent_effectuated"].status, RV_VALIDATION_FAILED)
+        self.assertIn("strict control check", rows["percent_effectuated"].reason)
         self.assertEqual(passive_control_value(observer, EXPECTED)[0], None)
 
 
@@ -201,7 +203,7 @@ class ResponseAvailabilityTests(unittest.TestCase):
         requests = natural_wave1()
         requests[4] = PassiveRequest(nap_payload(), body_error=True)
         rows, _ = runtime_rows(*requests)
-        for metric_id in ("new", "active", "passive"):
+        for metric_id in ("new_enrolled", "active_enrolled", "passive_enrolled"):
             self.assertEqual(rows[metric_id].status, RV_VALIDATION_FAILED)
             self.assertIsNone(rows[metric_id].value)
 
@@ -242,8 +244,8 @@ class PendingAndControlTests(unittest.TestCase):
 
     def test_catalog_not_promoted(self):
         runtime_rows(*natural_wave1())
-        self.assertEqual(list(METRICS), ["currently_enrolled_people"])
-        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people"])
+        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people", "percent_effectuated"])
 
 
 class ArtifactAndSafetyTests(unittest.TestCase):
@@ -257,7 +259,7 @@ class ArtifactAndSafetyTests(unittest.TestCase):
             html = path.read_text(encoding="utf-8")
             doc = (path.parent / "wave1_runtime_validation.json").read_text(encoding="utf-8")
         for text in ("400,002", "300,003", "500,004", "100,005", "200,006", "300,007", "97.00%",
-                     "VALUE_EXTRACTED", "PENDING", "DISCOVERED — awaiting UI verification",
+                     "VALUE_EXTRACTED", "PENDING", "VALIDATION ONLY — awaiting verified filter fingerprint", "sha256:",
                      "Passive Currently Enrolled", "700,001", "PASS"):
             self.assertIn(text, html)
         self.assertEqual(json.loads(doc)["currently_enrolled_control"]["status"], "PASS")

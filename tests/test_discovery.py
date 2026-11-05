@@ -175,7 +175,7 @@ class ShapeTests(unittest.TestCase):
     def test_multi_measure_widget(self):
         body = widget_payload("w5", "Enrollment Type", measures=["New", "Active", "Passive"])
         result_, metrics = discover(widget_request(body, [cell(1), cell(2), cell(3)]))
-        for metric_id in ("new", "active", "passive"):
+        for metric_id in ("new_enrolled", "active_enrolled", "passive_enrolled"):
             self.assertEqual(metrics[metric_id].state, STATE_DISCOVERED)
             self.assertEqual(metrics[metric_id].widget.structure.widget_id, "w5")
         self.assertEqual(result_.widgets[0].response.shape, SHAPE_MULTI_MEASURE)
@@ -191,9 +191,9 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(response.shape, SHAPE_CATEGORICAL)
         self.assertEqual((response.rows, response.value_cells), (4, 8))
         self.assertEqual(set(response.matched_category_labels), {"New", "Active"})
-        self.assertEqual(metrics["new"].state, STATE_DISCOVERED)
-        self.assertEqual(metrics["new"].match_sources, ("category label",))
-        self.assertEqual(metrics["passive"].state, STATE_PENDING)
+        self.assertEqual(metrics["new_enrolled"].state, STATE_DISCOVERED)
+        self.assertEqual(metrics["new_enrolled"].match_sources, ("category label",))
+        self.assertEqual(metrics["passive_enrolled"].state, STATE_PENDING)
 
     def test_time_series_widget(self):
         body = widget_payload("w7", "Submitted Applications", measures=["Submitted Applications"],
@@ -238,7 +238,8 @@ class VerifiedControlTests(unittest.TestCase):
         m = metrics["currently_enrolled_people"]
         self.assertEqual(m.state, STATE_VERIFIED)
         self.assertEqual(m.control, CONTROL_PASS)
-        self.assertEqual(metrics["pct_effectuated"].state, STATE_DISCOVERED)
+        self.assertEqual(metrics["percent_effectuated"].state, STATE_VERIFIED)
+        self.assertEqual(metrics["percent_effectuated"].control, CONTROL_PASS)
 
     def test_control_keeps_strict_filter_check(self):
         changed = payload(lambda b: scope(b, "coverage_year")["jaql"]["filter"].update(members=["2026"]))
@@ -254,17 +255,17 @@ class VerifiedControlTests(unittest.TestCase):
 
 class ProductionIsolationTests(unittest.TestCase):
     def test_catalog_unchanged(self):
-        self.assertEqual(list(METRICS), ["currently_enrolled_people"])
-        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people"])
+        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people", "percent_effectuated"])
         for target in WAVE1_TARGETS:
-            expected = STATE_VERIFIED if target.metric_id == "currently_enrolled_people" else STATE_PENDING
+            expected = STATE_VERIFIED if target.metric_id in METRICS else STATE_PENDING
             self.assertEqual(catalog_state(target.metric_id), expected)
 
     def test_discovered_metric_cannot_create_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp, SnapshotStore(Path(tmp) / "h.sqlite3") as store:
             store.start_run("r1")
             for target in WAVE1_TARGETS:
-                if target.metric_id == "currently_enrolled_people":
+                if target.metric_id in METRICS:
                     continue
                 with self.subTest(target.metric_id), self.assertRaises(SnapshotRejected):
                     store.record_snapshot("r1", result(metric=target.metric_id))

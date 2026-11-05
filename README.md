@@ -75,6 +75,31 @@ history marked `STALE` (or `NO HISTORY`).
 Comparisons (daily, 7-day, 30-day) show "Insufficient history" until enough
 real snapshots exist. They are never filled with zero or a baseline.
 
+## Verified dashboard metrics (passive, production)
+
+Besides Currently Enrolled People (the application request), every normal run
+reads production-VERIFIED metrics from the JAQL responses the dashboard itself
+already received — no additional request. Currently: **% Effectuated**, the
+second measure of the verified Currently Enrolled widget.
+
+A value is accepted only when the source request matches the verified
+definition exactly (dashboard, widget, datasource, every measure and scope
+filter; `queryGuid` ignored), the latest such response is HTTP 200, the value
+binds to the exact measure title and passes type checks, and the Currently
+Enrolled value in the same response equals the application value (canary).
+Otherwise that metric alone is `NOT AVAILABLE` (or `STALE` from its last
+snapshot) and nothing is stored for it. Passive values are stored only when
+the application request also succeeded. % Effectuated is stored as the raw
+ratio and shown as a percentage; its changes are shown in percentage points.
+
+Applications Started, Submitted Applications, Total Applicants, New, Active
+and Passive are **validation only** (PENDING in the dashboard): their values
+matched the UI, but no verified filter definition exists for their widgets
+yet. Promotion evidence is the `definition_fingerprint` in
+`reports/validation/wave1_runtime_validation.json` from a run whose values
+match the Sisense UI; it is approved by setting `expected_fingerprint` in
+`metrics/catalog.py` and moving the metric into `METRICS`.
+
 `data/` and `reports/` contain internal business metrics and are git-ignored.
 The database contains metric values and run status only; no credentials,
 cookies, headers or payloads.
@@ -115,7 +140,7 @@ $env:SISENSE_DISCOVERY="true"; .\.venv\Scripts\python.exe main.py
 ## Wave 1 runtime validation (developer review only)
 
 With `SISENSE_RUNTIME_VALIDATION=true` (implies discovery), the run reads the
-values of the seven DISCOVERED metrics (Applications Started, Submitted
+values of the seven Wave 1 metrics (Applications Started, Submitted
 Applications, Total Applicants, % Effectuated, New, Active, Passive) from the
 responses the dashboard already received. Each value is bound to its exact
 measure definition in the dashboard's own request and checked by type; anything
@@ -123,8 +148,10 @@ ambiguous fails closed. Cancelled and Terminated stay PENDING.
 
 Output: `reports/validation/wave1_runtime_validation.html` (+ `.json`) and a
 console summary, including the Currently Enrolled passive-vs-application
-control. Values are for comparison with the Sisense UI only: never stored in
-history, never shown in the executive dashboard, never promoted automatically.
+control and, per widget, a `definition_fingerprint` (SHA-256 of the request's
+dashboard, widget, datasource, measure and filter definitions; no filter
+values). Values here are for comparison with the Sisense UI only: never stored
+in history and never promoted automatically.
 
 ```powershell
 $env:SISENSE_RUNTIME_VALIDATION="true"; .\.venv\Scripts\python.exe main.py

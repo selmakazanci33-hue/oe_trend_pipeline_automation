@@ -15,9 +15,9 @@ from sisense.payloads.currently_enrolled import build_currently_enrolled_query
 
 
 class CatalogTests(unittest.TestCase):
-    def test_only_currently_enrolled_is_active(self):
-        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people"])
-        self.assertEqual(list(METRICS), ["currently_enrolled_people"])
+    def test_only_verified_metrics_are_active(self):
+        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
 
     def test_metadata(self):
         m = get_metric("currently_enrolled_people")

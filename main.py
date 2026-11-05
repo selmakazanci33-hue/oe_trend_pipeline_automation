@@ -48,8 +48,22 @@ from sisense.request_metadata import (
     csrf_header_matches_context_cookie,
     headers_from_observed_request,
 )
-from metrics.catalog import CURRENTLY_ENROLLED, STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED, WAVE1_TARGETS
+from metrics.catalog import (
+    CURRENTLY_ENROLLED,
+    STATE_DISCOVERED,
+    STATE_PENDING,
+    STATE_VERIFIED,
+    WAVE1_TARGETS,
+    passive_metrics,
+)
 from metrics.discovery import resolve_targets
+from metrics.passive_metrics import (
+    MAX_CANDIDATES_PER_WIDGET,
+    PassiveMetricOutcome,
+    SourceWidgetObserver,
+    apply_control,
+    extract_passive_metric,
+)
 from metrics.runtime_validation import (
     RV_NOT_AVAILABLE,
     RV_PENDING,
@@ -62,9 +76,9 @@ from metrics.runtime_validation import (
 )
 from reporting.discovery_report import write_discovery_report
 from reporting.validation_report import format_runtime_value, write_validation_report
-from reporting.formatting import fmt_comparison, fmt_int, fmt_time
+from reporting.formatting import fmt_comparison, fmt_int, fmt_metric_value, fmt_time
 from sisense.discovery import DiscoveryObserver, evaluate_discovery
-from reporting.pipeline import ReportingPipeline, ReportingSummary
+from reporting.pipeline import PassiveRunValue, ReportingPipeline, ReportingSummary
 from sisense.retry import RetryPolicy
 from validation.validators import extract_count_measure_value
 
@@ -194,11 +208,15 @@ def main() -> int:
     passive_observation = None
     discovery_observer = create_discovery_observer(settings, query)
     discovery_outcome = None
+    source_observer = create_source_observer(settings)
+    passive_outcomes: tuple[PassiveMetricOutcome, ...] = ()
+    passive_retrieved_at = None
     try:
         with sync_playwright() as playwright:
             authenticator = SisenseAuthenticator(
                 playwright, settings,
-                extra_observers=tuple(o for o in (passive_observer, discovery_observer) if o is not None),
+                extra_observers=tuple(o for o in (passive_observer, discovery_observer, source_observer)
+                                      if o is not None),
             )
             session = authenticator.open_session()
             try:
@@ -213,6 +231,9 @@ def main() -> int:
                     discovery_outcome = run_discovery(session, discovery_observer, query, settings)
                 if passive_observer is not None:
                     passive_observation = run_passive_observation(session, passive_observer, settings.timeouts.slow)
+                if source_observer is not None:
+                    passive_outcomes = read_passive_metrics(session, source_observer, settings.timeouts.slow)
+                    passive_retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 value = retrieve_value(session, settings, query, request_metadata)
             finally:
                 session.close()
@@ -251,15 +272,99 @@ def main() -> int:
         print_discovery_summary(discovery_outcome)
     finish_runtime_validation(discovery_outcome, settings, result.value)
 
+    passive_values = passive_run_values(passive_outcomes, result, passive_retrieved_at)
     if reporting is None:
+        print_passive_metrics(passive_values, None)
         return EXIT_OK
     try:
-        summary = reporting.complete_success(run_id, result)
+        summary = reporting.complete_success(run_id, result, passive_values)
     except Exception as exc:
         logger.error("Snapshot/report step failed: %s", type(exc).__name__)
         return EXIT_FAILURE
     print_reporting_summary(summary, result)
+    print_passive_metrics(passive_values, summary)
     return EXIT_OK
+
+
+def create_source_observer(settings: Settings) -> SourceWidgetObserver | None:
+    """Production passive sources: always on for normal runs; never in diagnostics mode."""
+    metrics = passive_metrics()
+    if settings.diagnostics_only or not metrics:
+        return None
+    return SourceWidgetObserver(m.passive_source.widget_id for m in metrics)
+
+
+def read_passive_metrics(
+    session: AuthenticatedSession, observer: SourceWidgetObserver, timeout: int
+) -> tuple[PassiveMetricOutcome, ...]:
+    """Read verified passive metrics from already-returned responses; never raises, never sends a request."""
+    try:
+        deadline = time.monotonic() + timeout / 1000
+        for _ in range(len(observer.widget_ids) * MAX_CANDIDATES_PER_WIDGET):
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if not observer.missing() or remaining_ms <= 0:
+                break
+            try:
+                session.context.wait_for_event(
+                    "requestfinished", predicate=observer.is_source_request, timeout=remaining_ms
+                )
+            except PlaywrightTimeoutError:
+                break
+    except Exception as exc:
+        logger.error("Passive source wait failed: %s", type(exc).__name__)
+    observer.stop()
+    outcomes = tuple(extract_passive_metric(m, observer) for m in passive_metrics())
+    logger.info("Passive production metrics: %s",
+                ", ".join(f"{o.metric_id} {o.status}" for o in outcomes))
+    return outcomes
+
+
+def passive_run_values(
+    outcomes: tuple[PassiveMetricOutcome, ...], result: MetricResult, retrieved_at: str | None
+) -> tuple[PassiveRunValue, ...]:
+    """Only values that passed every check and the Currently Enrolled canary become results."""
+    values = []
+    by_id = {o.metric_id: o for o in outcomes}
+    for metric in passive_metrics():
+        outcome = by_id.get(metric.metric_id)
+        if outcome is None:
+            values.append(PassiveRunValue(metric, None, "Passive source not read in this run"))
+            continue
+        outcome = apply_control(outcome, result.value)
+        if not outcome.succeeded or retrieved_at is None:
+            values.append(PassiveRunValue(metric, None, outcome.failure or "Value not available"))
+            continue
+        values.append(PassiveRunValue(metric, MetricResult(
+            metric=metric.metric_id,
+            plan_year=metric.plan_year,
+            value=outcome.value,
+            retrieved_at=retrieved_at,
+            source=metric.source,
+            dashboard=metric.dashboard,
+        )))
+    return tuple(values)
+
+
+def print_passive_metrics(values: tuple[PassiveRunValue, ...], summary: ReportingSummary | None) -> None:
+    if not values:
+        return
+    panels = {p.metric.metric_id: p for p in summary.panels} if summary is not None else {}
+    print("Verified dashboard metrics (passive, zero additional requests)")
+    for item in values:
+        metric = item.metric
+        panel = panels.get(metric.metric_id)
+        if item.result is not None:
+            shown = fmt_metric_value(item.result.value, metric.value_format)
+            status = "LIVE"
+        else:
+            shown = item.failure
+            status = panel.data_status if panel is not None else "NOT AVAILABLE"
+        snapshot = ""
+        if panel is not None and panel.snapshot_write_status:
+            snapshot = f"  snapshot {panel.snapshot_write_status}"
+        print(f"  {metric.display_name:<28}{status:<15}{shown}{snapshot}")
+    print()
+    print(RULE)
 
 
 def create_passive_observer(settings: Settings, query: JaqlQuery) -> PassiveWidgetObserver | None:
@@ -459,7 +564,7 @@ def report_failure(reporting: ReportingPipeline | None, run_id: str, exc: BaseEx
     if reporting is None:
         return
     try:
-        summary = reporting.complete_failure(run_id, type(exc).__name__)
+        summary = reporting.complete_failure(run_id, type(exc).__name__, passive_metrics())
     except Exception as report_exc:
         logger.error("Could not update the report after failure: %s", type(report_exc).__name__)
         return
