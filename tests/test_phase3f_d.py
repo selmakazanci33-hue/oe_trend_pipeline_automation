@@ -31,7 +31,7 @@ from tests.test_session_context import FakeResponse
 
 DEVELOPER_TERMS = (
     "VERIFIED", "Verified", "DISCOVERED", "VALUE_EXTRACTED", "NOT_AVAILABLE", "VALIDATION",
-    "fingerprint", "sha256", "ELIGIBLE", "Observation", "widget_id", "JAQL", "queryGuid",
+    "fingerprint", "sha256", "ELIGIBLE", "widget_id", "JAQL", "queryGuid",
 )
 ENROLLMENT_HEADINGS = (
     "Current Enrollment",

@@ -119,6 +119,14 @@ def daily_series_row(candidate: CancellationCandidate, payload: Mapping[str, Any
     if date is None:
         return RuntimeValue(candidate.metric_id, candidate.discovery_label, RV_VALIDATION_FAILED,
                             reason="Daily series requires exactly one date dimension", **common)
+    if candidate.source_date_column and (
+            date.table != candidate.source_table or date.column != candidate.source_date_column):
+        return RuntimeValue(
+            candidate.metric_id, candidate.discovery_label, RV_VALIDATION_FAILED,
+            reason="Daily series date dimension is not the observed source column",
+            date_dimension_title=date.title, date_table=date.table, date_column=date.column,
+            time_grain=date.level, **common,
+        )
     try:
         binding = bind_exact_measure(payload, candidate.discovery_label)
     except BindingError as exc:
@@ -135,11 +143,19 @@ def daily_series_row(candidate: CancellationCandidate, payload: Mapping[str, Any
         **common,
         "shape": summary.shape,
         "date_dimension_title": date.title,
+        "date_table": date.table,
+        "date_column": date.column,
         "time_grain": grain,
         "bound_measure_title": binding.title,
         "binding": binding.basis,
         "measure_titles": titles,
     }
+    if common.get("http_status") != 200:
+        return RuntimeValue(candidate.metric_id, candidate.discovery_label, RV_VALIDATION_FAILED,
+                            reason="Daily series requires HTTP 200", **common)
+    if structure.datasource_title != VERIFIED_DATASOURCE["title"]:
+        return RuntimeValue(candidate.metric_id, candidate.discovery_label, RV_VALIDATION_FAILED,
+                            reason="Datasource is not the verified MAIN datasource", **common)
     if grain != DAILY_GRAIN:
         return RuntimeValue(candidate.metric_id, candidate.discovery_label, RV_VALIDATION_FAILED,
                             reason="Daily series requires verified time grain 'days'", **common)
@@ -192,6 +208,9 @@ def cancellation_eligibility(row: RuntimeValue, candidate: CancellationCandidate
             return f"Extraction status {row.status}"
         if not row.date_dimension_title:
             return "Daily series requires a verified date dimension"
+        if candidate.source_date_column and (
+                row.date_table != candidate.source_table or row.date_column != candidate.source_date_column):
+            return "Daily series date dimension is not the observed source column"
         if row.time_grain != DAILY_GRAIN:
             return "Daily series requires verified time grain 'days'"
         if not row.date_semantics:

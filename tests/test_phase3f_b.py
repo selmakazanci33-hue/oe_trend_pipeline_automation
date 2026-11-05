@@ -47,7 +47,7 @@ VALUES = {"applications_started": 300_011, "submitted_applications": 300_022, "t
 STARTED_MEASURE = "Count of started applications"
 SUBMITTED_MEASURE = "Count of submitted applications"
 DEVELOPER_TERMS = ("VERIFIED", "Verified", "DISCOVERED", "VALUE_EXTRACTED", "NOT_AVAILABLE", "VALIDATION",
-                   "fingerprint", "sha256", "ELIGIBLE", "Observation", "NO HISTORY")
+                   "fingerprint", "sha256", "ELIGIBLE", "NO HISTORY")
 
 
 def visible(html):

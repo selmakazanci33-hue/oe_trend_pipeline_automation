@@ -66,6 +66,8 @@ class Column:
     kind: str  # "measure" | "dimension"
     datatype: str | None
     level: str | None
+    table: str | None = None
+    column: str | None = None
 
     @property
     def is_date(self) -> bool:
@@ -133,6 +135,8 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
         title = jaql.get("title") if isinstance(jaql.get("title"), str) else None
         jaql_type = jaql.get("type") if isinstance(jaql.get("type"), str) else None
         level = jaql.get("level") if isinstance(jaql.get("level"), str) else None
+        table = jaql.get("table") if isinstance(jaql.get("table"), str) else None
+        column_name = jaql.get("column") if isinstance(jaql.get("column"), str) else None
         if item.get("panel") == "scope":
             filters += 1
             dashboard_filters += jaql.get("isDashboardFilter") is True
@@ -140,7 +144,7 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
             continue
         kind = "measure" if jaql.get("type") == "measure" or "formula" in jaql else "dimension"
         datatype = jaql.get("datatype") if isinstance(jaql.get("datatype"), str) else None
-        columns.append(Column(title, kind, datatype, level))
+        columns.append(Column(title, kind, datatype, level, table, column_name))
         roles.append(MetadataRole("result", kind, jaql_type, title, level))
     datasource = payload.get("datasource") if isinstance(payload.get("datasource"), Mapping) else {}
     widget_type = payload.get("widgetType")
@@ -207,9 +211,11 @@ class DiscoveryObserver:
         self.target_requests_seen = 0
         self.out_of_scope = 0
         self.widgets_dropped = 0
+        self._closed = False
 
     def attach(self, context: BrowserContext) -> None:
         self._context = context
+        self._closed = False
         self._widgets = {}
         self.target_requests_seen = 0
         self.out_of_scope = 0
@@ -222,6 +228,8 @@ class DiscoveryObserver:
         context.on("requestfinished", on_request_finished)
 
     def stop(self) -> None:
+        """Stop retaining dashboard traffic. Later requests, including this application's, are ignored."""
+        self._closed = True
         self._context = None
 
     def is_target(self, request: Request) -> bool:
@@ -240,6 +248,8 @@ class DiscoveryObserver:
         return structure is not None
 
     def _on_request_finished(self, request: Request) -> None:
+        if self._closed:
+            return
         if not self.is_target(request):
             return
         if any(entry.latest_request is request for entry in self._widgets.values()):

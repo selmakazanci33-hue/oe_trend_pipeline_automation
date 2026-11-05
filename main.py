@@ -234,7 +234,7 @@ def main() -> int:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
                 request_metadata = obtain_request_metadata(session, authenticator.jaql_observer, settings)
                 if discovery_observer is not None:
-                    discovery_outcome = run_discovery(session, discovery_observer, query, settings)
+                    begin_discovery(session, discovery_observer, settings)
                 if passive_observer is not None:
                     passive_observation = run_passive_observation(session, passive_observer, settings.timeouts.slow)
                 if source_observer is not None:
@@ -244,6 +244,8 @@ def main() -> int:
                     passive_retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 value = retrieve_value(session, settings, query, request_metadata)
             finally:
+                if discovery_observer is not None and discovery_outcome is None:
+                    discovery_outcome = finalize_discovery(session, discovery_observer, query, settings)
                 session.close()
     except MissingVerifiedInformation as exc:
         logger.error("STOP: %s", exc)
@@ -470,12 +472,25 @@ class DiscoveryOutcome:
     identification: tuple = ()
 
 
-def run_discovery(
-    session: AuthenticatedSession, observer: DiscoveryObserver, query: JaqlQuery, settings: Settings
+def begin_discovery(session: AuthenticatedSession, observer: DiscoveryObserver, settings: Settings) -> None:
+    """Note the initial dashboard wave, then keep listening.
+
+    The first quiet gap is not the end of capture. Dashboard JAQL that finishes
+    later, while this authenticated session is still open, stays in the inventory.
+    This does not send a request and does not stop the observer.
+    """
+    wait_for_dashboard_quiet(session, observer, settings.timeouts)
+
+
+def finalize_discovery(
+    _session: AuthenticatedSession, observer: DiscoveryObserver, query: JaqlQuery, settings: Settings
 ) -> DiscoveryOutcome | None:
-    """Discovery only: never raises, never sends a request, never touches history or the executive report."""
+    """Stop listening, then read responses the browser already received.
+
+    Called when the authenticated dashboard session is ending, after any later
+    dashboard-generated JAQL has had the chance to finish. Does not send a request.
+    """
     try:
-        wait_for_dashboard_quiet(session, observer, settings.timeouts)
         observer.stop()
         try:
             expected = ExpectedWidgetQuery.from_verified_query(query)

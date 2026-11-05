@@ -121,7 +121,7 @@ def daily_payload(level="days", measures=None, **kw):
         "w-canc-daily",
         "Cancellation Activity",
         measures=list(measures or ("Cancelled Policies", "Terminated Policies")),
-        dimensions=[("Date", "datetime", level)],
+        dimensions=[("Date", "datetime", level, "enrollment", "last_update_timestamp")],
         widget_type="chart/line",
         **kw,
     )

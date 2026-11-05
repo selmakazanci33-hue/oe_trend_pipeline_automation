@@ -82,6 +82,8 @@ class RuntimeValue:
     measure_titles: tuple[str, ...] = ()
     bound_measure_title: str | None = None
     date_dimension_title: str | None = None
+    date_table: str | None = None
+    date_column: str | None = None
     time_grain: str | None = None
     date_semantics: str | None = None
     series_point_count: int | None = None

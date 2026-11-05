@@ -18,12 +18,25 @@ from plotly.offline import get_plotlyjs
 from analytics.derived import DERIVED, SNAPSHOT, SOURCE, Comparison, DerivedValue
 from metrics.catalog import (
     PENDING_MESSAGE,
+    SECTION_CANCELLATION_ACTIVITY,
+    SECTION_CANCELLATION_OVERVIEW,
     SECTION_CURRENT_ENROLLMENT,
     SECTION_ENROLLMENT_METRICS,
+    SECTION_ENROLLMENT_STATUS,
     STATUS_ACTIVE,
     MetricDefinition,
     report_sections,
     roadmap_for,
+)
+from reporting.status_explorer import (
+    DISTRIBUTION_NOTE,
+    EXPLORER_STATUSES,
+    PENDING_ENROLLMENT,
+    PENDING_SOURCE,
+    detail_lines,
+    detail_records,
+    explorer_document,
+    explorer_script,
 )
 from reporting.formatting import (
     ARROWS,
@@ -438,17 +451,161 @@ def _applications_view(model: ReportModel) -> str:
             f"{body}{chips}</section>")
 
 
+def _section_meta(section_id: str):
+    for section in report_sections("enrollment"):
+        if section.section_id == section_id:
+            return section
+    raise KeyError(section_id)
+
+
+def _pending_chip(name: str) -> str:
+    return f'<li><span>{escape(name)}</span><span class="badge badge-none">PENDING</span></li>'
+
+
+def _status_chips() -> str:
+    buttons = []
+    for status in EXPLORER_STATUSES:
+        selected = status.key == "all"
+        buttons.append(
+            f'<button type="button" class="status-chip{" is-selected" if selected else ""}" '
+            f'data-status-key="{escape(status.key)}" aria-pressed="{"true" if selected else "false"}">'
+            f'{escape(status.label)}</button>'
+        )
+    return f'<div class="status-selector" role="group" aria-label="Enrollment status">{"".join(buttons)}</div>'
+
+
+def _observation_table(observations: list[dict]) -> str:
+    if not observations:
+        return ""
+    headers = ("Observation timestamp", "Metric/status", "Value", "Source", "Data status",
+               "Historical observation", "Change")
+    keys = ("observed_at", "metric", "value", "source", "data_status", "previous_value", "change")
+    head = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{escape(str(row[key]))}</td>" for key in keys) + "</tr>"
+        for row in observations
+    )
+    return f'<table class="stats status-records"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
+
+
+def _detail_html(records: list[dict]) -> str:
+    blocks = []
+    for record in records:
+        rows = "".join(
+            f"<tr><th>{escape(label)}</th><td>{escape(value)}</td></tr>"
+            for label, value in detail_lines(record)
+        )
+        blocks.append(
+            f'<article data-status-detail="{escape(record["metric_id"])}">'
+            f'<h3>{escape(record["display_name"])}</h3><table class="kv">{rows}</table>'
+            f'{_observation_table(record.get("observations") or [])}</article>'
+        )
+    return "".join(blocks)
+
+
+def _source_series_table(points, label: str, metric_id: str) -> str:
+    if not points:
+        return ""
+    body = "".join(
+        f"<tr><td>{escape(point.source_date)}</td><td>{escape(label)}</td>"
+        f'<td class="num">{escape(fmt_int(point.value))}</td></tr>'
+        for point in points
+    )
+    chart = (f'<div class="status-chart" data-series-chart="{escape(metric_id)}" hidden></div>')
+    return (
+        f'<table class="stats" data-source-series="{escape(metric_id)}"><thead><tr>'
+        f"<th>Date</th><th>Status/Series</th><th>Record Count</th></tr></thead>"
+        f"<tbody>{body}</tbody></table>{chart}"
+    )
+
+
+def _named_group(section_id: str) -> tuple[tuple[str, str], ...]:
+    found: list[tuple[str, str]] = []
+    for status in EXPLORER_STATUSES:
+        for group in status.groups:
+            if group.section_id == section_id:
+                found.extend((status.key, name) for name in group.items)
+    return tuple(found)
+
+
+def _series_points(model: ReportModel, status_key: str):
+    status = next(item for item in EXPLORER_STATUSES if item.key == status_key)
+    if not status.series_metric_id:
+        return status, ()
+    points = tuple(point for point in model.source_series if point.metric_id == status.series_metric_id)
+    return status, points
+
+
+def _pending_block(model: ReportModel, section_id: str, panel_keys: str) -> str:
+    section = _section_meta(section_id)
+    sub = f'<span class="section-sub">{escape(section.subtitle)}</span>' if section.subtitle else ""
+    items = _named_group(section_id)
+    if section_id == SECTION_CANCELLATION_ACTIVITY:
+        blocks = []
+        for key, name in items:
+            status, points = _series_points(model, key)
+            series = _source_series_table(points, name, status.series_metric_id or "") if points else ""
+            blocks.append(
+                f'<div data-explorer-item="{escape(key)}"><ul class="roadmap compact">{_pending_chip(name)}</ul>'
+                f"{series}</div>"
+            )
+        lists = "".join(blocks)
+    else:
+        lists = f'<ul class="roadmap compact">{"".join(_pending_chip(name) for _, name in items)}</ul>'
+    return (
+        f'<section class="pending-group" data-section="{escape(section_id)}" '
+        f'data-explorer-panel="{escape(panel_keys)}" hidden>'
+        f'<div class="section-head"><h2>{escape(section.heading)}</h2>{sub}</div>'
+        f'<p class="muted">{escape(PENDING_SOURCE)}</p>{lists}</section>'
+    )
+
+
+def _status_explorer(model: ReportModel) -> str:
+    document = explorer_document(model)
+    records = detail_records(document, "all")
+    has_counts = any(record["value"] is not None for record in records)
+    empty_hidden = " hidden" if has_counts else ""
+    panels = _panels_in(model, SECTION_ENROLLMENT_STATUS)
+    slots = "".join(
+        f'<div class="status-slot" data-explorer-metric="{escape(panel.metric.metric_id)}">'
+        f'{_panel_card(panel, model.snapshot_granularity)}</div>'
+        for panel in panels
+    )
+    cards = (
+        f'<section data-section="{SECTION_ENROLLMENT_STATUS}" data-explorer-panel="verified">'
+        f'<div class="grid grid-4">{slots}</div></section>'
+        if panels else ""
+    )
+    return (
+        f'<section data-section="status_explorer"><div class="section-head"><h2>Enrollment Status</h2></div>'
+        f'{_status_chips()}'
+        f'<div data-explorer-panel="verified"><h3>Status Distribution</h3>'
+        f'<p class="muted">{escape(DISTRIBUTION_NOTE)}</p>'
+        f'<div id="status-distribution-chart" class="status-chart"></div>'
+        f'<p id="status-distribution-empty" class="empty"{empty_hidden}>Not available</p>'
+        f'<div id="status-detail" class="status-detail">{_detail_html(records)}</div>'
+        f'<div id="status-history-chart" class="status-chart" hidden></div></div></section>'
+        + cards
+        + _pending_block(model, SECTION_CANCELLATION_OVERVIEW, "cancelled")
+        + _pending_block(model, SECTION_CANCELLATION_ACTIVITY, "cancelled terminated")
+        + (f'<div class="card pending" data-explorer-panel="pending" hidden>'
+           f'<p class="muted">{escape(PENDING_ENROLLMENT)}</p></div>')
+    )
+
+
 def _enrollment_view(model: ReportModel) -> str:
+    held = {SECTION_ENROLLMENT_STATUS, SECTION_CANCELLATION_OVERVIEW, SECTION_CANCELLATION_ACTIVITY}
     grouped = "".join(
         _grouped_section(model, section)
         for section in report_sections("enrollment")
-        if section.section_id not in (SECTION_CURRENT_ENROLLMENT, SECTION_ENROLLMENT_METRICS)
+        if section.section_id not in (SECTION_CURRENT_ENROLLMENT, SECTION_ENROLLMENT_METRICS) and section.section_id not in held
     )
     return (
         f'<section data-section="{SECTION_CURRENT_ENROLLMENT}"><div class="section-head">'
         f"<h2>Current Enrollment</h2></div>{_kpi_section(model)}</section>"
         + _panels_section(_panels_in(model, SECTION_ENROLLMENT_METRICS), "Enrollment Metrics",
                           SECTION_ENROLLMENT_METRICS, model.snapshot_granularity)
+        + _status_explorer(model)
         + grouped
         + _history_section(model)
         + _trend_section(model, "trend-chart-enrollment")
@@ -480,6 +637,8 @@ def render_html(model: ReportModel) -> str:
                      f'<h1 class="view-title">{escape(module.title)}</h1>{content}</div>')
 
     figure = _script_json(chart_figure(model))
+    document = explorer_document(model)
+    status_script = explorer_script(document, _script_json(document))
     pipeline_badge = _badge(model.pipeline_status)
 
     return f"""<!DOCTYPE html>
@@ -544,6 +703,7 @@ def render_html(model: ReportModel) -> str:
   }});
 }})();
 </script>
+<script>{status_script}</script>
 </body>
 </html>
 """
@@ -627,6 +787,15 @@ align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--line);border
 .metric-value{font-size:34px;font-weight:800;color:var(--navy);line-height:1.15;margin-top:8px;font-variant-numeric:tabular-nums}
 .metric-value.muted{font-size:20px;color:var(--muted)}.metric-change{margin-top:10px;font-weight:700;font-size:14px}
 footer{font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.status-selector{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 14px}
+.status-chip{all:unset;cursor:pointer;padding:7px 12px;border-radius:999px;border:1px solid var(--line);
+background:#fff;color:var(--navy);font-size:12px;font-weight:700;letter-spacing:.06em}
+.status-chip:hover{border-color:var(--blue);background:#eef3f9}
+.status-chip.is-selected{background:var(--navy);color:#fff;border-color:var(--navy)}
+.status-chart{width:100%;min-height:0}
+.status-detail{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:12px}
+.status-detail article{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.status-detail h3{margin:0 0 8px;font-size:15px;color:var(--navy)}
 @media (max-width:860px){.layout{grid-template-columns:1fr}.sidebar{flex-direction:row;overflow-x:auto;
 border-right:0;border-bottom:1px solid var(--line)}.nav-item{white-space:nowrap}.kpi-value{font-size:42px}}
 """

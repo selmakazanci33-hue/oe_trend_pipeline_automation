@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from analytics.derived import DataPoint, MetricAnalytics, compute_analytics
 from history.store import Snapshot, SnapshotWriteResult, parse_utc
@@ -80,6 +81,7 @@ class ReportModel:
     panels: tuple["MetricPanel", ...] = ()
     last_successful_retrieval: datetime | None = None
     snapshot_granularity: str = "hour"
+    source_series: tuple[Any, ...] = ()
 
     @property
     def kpi(self) -> DataPoint | None:
@@ -140,6 +142,7 @@ def build_report_model(
     generated_at: datetime,
     panels: tuple[MetricPanel, ...] = (),
     snapshot_granularity: str = "hour",
+    source_series: tuple[Any, ...] = (),
 ) -> ReportModel:
     current: DataPoint | None = None
     if outcome.succeeded:
@@ -182,4 +185,5 @@ def build_report_model(
         roadmap=ROADMAP,
         snapshot_granularity=snapshot_granularity,
         panels=tuple(panels),
+        source_series=tuple(source_series),
     )

@@ -56,12 +56,25 @@ def _has_hint(text: str, hints: tuple[str, ...]) -> bool:
     return any(hint in text for hint in hints)
 
 
+def _date_identity_ok(widget: WidgetDiscovery, metric_id: str) -> bool:
+    """Observed daily identities must match their own date column. Others are not inferred."""
+    candidate = CANCELLATION_CANDIDATES[metric_id]
+    if not candidate.source_date_column:
+        return True
+    dates = [column for column in widget.structure.dimensions if column.is_date]
+    if len(dates) != 1:
+        return False
+    date = dates[0]
+    return (date.table == candidate.source_table and date.column == candidate.source_date_column
+            and date.level == GRAIN_DAYS)
+
+
 def _exact_measure_labels(widget: WidgetDiscovery) -> tuple[str, ...]:
     titles = {normalize_label(c.title) for c in widget.structure.measures}
     matched = []
     for candidate in CANCELLATION_CANDIDATES.values():
         key = normalize_label(candidate.discovery_label)
-        if key and key in titles:
+        if key and key in titles and _date_identity_ok(widget, candidate.metric_id):
             matched.append(candidate.metric_id)
     return tuple(matched)
 

@@ -13,10 +13,20 @@ def widget_payload(widget_id, title, measures=(), dimensions=(), filters=3, widg
                    dashboard=DASHBOARD_REF, datasource=None, query_guid="GUID-1"):
     metadata = [{"jaql": {"type": "measure", "formula": "Count([AAA-1])", "title": m}} for m in measures]
     for dim in dimensions:
-        dim_title, datatype, level = (dim + (None, None))[:3] if isinstance(dim, tuple) else (dim, "text", None)
+        if not isinstance(dim, tuple):
+            dim = (dim, "text", None)
+        dim_title = dim[0]
+        datatype = dim[1] if len(dim) > 1 else "text"
+        level = dim[2] if len(dim) > 2 else None
+        table = dim[3] if len(dim) > 3 else None
+        column_name = dim[4] if len(dim) > 4 else None
         jaql = {"dim": f"[t.{dim_title}]", "title": dim_title, "datatype": datatype}
         if level:
             jaql["level"] = level
+        if table:
+            jaql["table"] = table
+        if column_name:
+            jaql["column"] = column_name
         metadata.insert(0, {"jaql": jaql})
     for i in range(filters):
         metadata.append({"jaql": {"dim": f"[t.f{i}]", "title": f"f{i}", "isDashboardFilter": i == 0,

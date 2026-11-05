@@ -333,17 +333,22 @@ class CancellationCandidate:
     discovery_label: str
     section_id: str
     kind: str
+    source_table: str | None = None
+    source_date_column: str | None = None
 
 
 # Search labels are the source measure names to look for exactly in natural JAQL.
 # Display names stay on the production roadmap. Widget ids are not invented here.
+# Cancelled Policies' date identity is the column observed in natural dashboard traffic.
+# Terminated Policies has no observed date column yet and is not copied from Cancelled.
 CANCELLATION_CANDIDATES: dict[str, CancellationCandidate] = {c.metric_id: c for c in (
     CancellationCandidate("enrolled_cancelled", "Enrolled & Cancelled", "Enrolled & Cancelled",
                           SECTION_CANCELLATION_OVERVIEW, KIND_PEOPLE_AGGREGATE),
     CancellationCandidate("cancelled_not_enrolled", "Cancelled — Not Enrolled", "Cancelled - Not Enrolled",
                           SECTION_CANCELLATION_OVERVIEW, KIND_PEOPLE_AGGREGATE),
     CancellationCandidate("cancelled_policies_daily", "Cancelled Policies — Daily", "Cancelled Policies",
-                          SECTION_CANCELLATION_ACTIVITY, KIND_DAILY_POLICY_SERIES),
+                          SECTION_CANCELLATION_ACTIVITY, KIND_DAILY_POLICY_SERIES,
+                          source_table="enrollment", source_date_column="last_update_timestamp"),
     CancellationCandidate("terminated_policies_daily", "Terminated Policies — Daily", "Terminated Policies",
                           SECTION_CANCELLATION_ACTIVITY, KIND_DAILY_POLICY_SERIES),
 )}
