@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import uuid
 from datetime import datetime, timezone
 
 from playwright.sync_api import Error as PlaywrightError
@@ -36,6 +37,9 @@ from sisense.request_metadata import (
     csrf_header_matches_context_cookie,
     headers_from_observed_request,
 )
+from metrics.catalog import CURRENTLY_ENROLLED
+from reporting.formatting import fmt_comparison, fmt_int, fmt_time
+from reporting.pipeline import ReportingPipeline, ReportingSummary
 from sisense.retry import RetryPolicy
 from validation.validators import extract_count_measure_value
 
@@ -150,6 +154,15 @@ def main() -> int:
         logger.error("Configuration error: %s", exc)
         return EXIT_FAILURE
 
+    run_id = uuid.uuid4().hex
+    reporting = create_reporting(settings)
+    if reporting is not None:
+        try:
+            reporting.begin_run(run_id)
+        except Exception as exc:
+            logger.error("Snapshot history unavailable (%s); Sisense was not contacted", type(exc).__name__)
+            return EXIT_FAILURE
+
     try:
         with sync_playwright() as playwright:
             authenticator = SisenseAuthenticator(playwright, settings)
@@ -167,9 +180,11 @@ def main() -> int:
                 session.close()
     except MissingVerifiedInformation as exc:
         logger.error("STOP: %s", exc)
+        report_failure(reporting, run_id, exc)
         return EXIT_MISSING_VERIFIED_INFO
     except (SisenseError, PlaywrightError) as exc:
         logger.error("Retrieval failed: %s: %s", type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "")
+        report_failure(reporting, run_id, exc)
         return EXIT_FAILURE
 
     result = MetricResult(
@@ -190,7 +205,60 @@ def main() -> int:
     logger.info("Result: %s", json.dumps(result.to_dict()))
 
     print_report(result, settings.manual_baseline, query.widget_title)
+
+    if reporting is None:
+        return EXIT_OK
+    try:
+        summary = reporting.complete_success(run_id, result)
+    except Exception as exc:
+        logger.error("Snapshot/report step failed: %s", type(exc).__name__)
+        return EXIT_FAILURE
+    print_reporting_summary(summary, result)
     return EXIT_OK
+
+
+def create_reporting(settings: Settings) -> ReportingPipeline | None:
+    if settings.diagnostics_only or settings.history_db_path is None or settings.reports_dir is None:
+        return None
+    return ReportingPipeline(
+        CURRENTLY_ENROLLED,
+        history_db_path=settings.history_db_path,
+        reports_dir=settings.reports_dir,
+        granularity=settings.snapshot_granularity,
+    )
+
+
+def report_failure(reporting: ReportingPipeline | None, run_id: str, exc: BaseException) -> None:
+    """Record the failed run (no snapshot) and regenerate the report from stored history."""
+    if reporting is None:
+        return
+    try:
+        summary = reporting.complete_failure(run_id, type(exc).__name__)
+    except Exception as report_exc:
+        logger.error("Could not update the report after failure: %s", type(report_exc).__name__)
+        return
+    logger.info("Report regenerated from stored history (%s): %s", summary.data_status, summary.report_path)
+
+
+def print_reporting_summary(summary: ReportingSummary, result: MetricResult) -> None:
+    snapshot = "NOT WRITTEN"
+    if summary.snapshot_write is not None:
+        write = summary.snapshot_write
+        snapshot = "SAVED" if write.saved else (
+            f"SKIPPED ({write.status}: kept existing snapshot from {fmt_time(write.snapshot.retrieved_at_utc)})"
+        )
+    rows = [
+        ("Currently Enrolled", fmt_int(result.value)),
+        ("Snapshot", snapshot),
+        ("Historical Snapshots", str(summary.stored_snapshot_count)),
+        ("Data Status", summary.data_status),
+    ]
+    rows += [(c.label, fmt_comparison(c)) for c in summary.analytics.comparisons]
+    rows.append(("Report", str(summary.report_path)))
+    for label, value in rows:
+        print(f"{label:<22}{value}")
+    print()
+    print(RULE)
 
 
 if __name__ == "__main__":

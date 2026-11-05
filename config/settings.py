@@ -41,6 +41,8 @@ VERIFIED_PASSWORD_SELECTOR = "#password"
 SUPPORTED_BROWSER_CHANNELS = frozenset({"msedge", "chrome"})
 DEFAULT_BROWSER_CHANNEL = "msedge"
 
+SNAPSHOT_GRANULARITY_CHOICES = frozenset({"hour", "day"})
+
 
 class ConfigurationError(Exception):
     """Configuration is present but invalid."""
@@ -102,6 +104,10 @@ class Settings:
     browser_channel: str = DEFAULT_BROWSER_CHANNEL
     debug_session: bool = False
     diagnostics_only: bool = False
+    # Reporting is enabled only when both paths are set (load_settings always sets them).
+    history_db_path: Path | None = None
+    reports_dir: Path | None = None
+    snapshot_granularity: str = "hour"
 
     @property
     def jaql_url(self) -> str:
@@ -170,6 +176,14 @@ def _env_backoff(name: str, default: tuple[float, ...]) -> tuple[float, ...]:
     return values
 
 
+def _env_path(name: str, default: Path) -> Path:
+    raw = _env_str(name)
+    if raw is None:
+        return default
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 def _normalize_base_url(raw: str) -> str:
     base_url = raw.rstrip("/")
     if base_url != VERIFIED_BASE_URL:
@@ -236,6 +250,12 @@ def load_settings(env_file: Path | None = None) -> Settings:
             f"got {browser_channel!r}"
         )
 
+    snapshot_granularity = _env_str("SNAPSHOT_GRANULARITY", "hour").lower()
+    if snapshot_granularity not in SNAPSHOT_GRANULARITY_CHOICES:
+        raise ConfigurationError(
+            f"SNAPSHOT_GRANULARITY must be one of {sorted(SNAPSHOT_GRANULARITY_CHOICES)}, got {snapshot_granularity!r}"
+        )
+
     return Settings(
         base_url=base_url,
         email=email,
@@ -251,4 +271,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         browser_channel=browser_channel,
         debug_session=_env_bool("SISENSE_DEBUG_SESSION", False),
         diagnostics_only=_env_bool("SISENSE_DIAGNOSTICS_ONLY", False),
+        history_db_path=_env_path("HISTORY_DB_PATH", PROJECT_ROOT / "data" / "history" / "oe_metrics.sqlite3"),
+        reports_dir=_env_path("REPORTS_DIR", PROJECT_ROOT / "reports"),
+        snapshot_granularity=snapshot_granularity,
     )

@@ -9,3 +9,7 @@ venv/
 # Playwright traces/HAR files can contain cookies and headers.
 *.har
 trace*.zip
+
+# Internal business metrics: local snapshot history and generated reports.
+data/
+reports/

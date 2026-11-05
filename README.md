@@ -57,6 +57,28 @@ hidden password prompt.
 Exit codes: `0` success, `1` failure (including
 `CONFIGURED_BROWSER_NOT_AVAILABLE`), `2` verified information missing.
 
+## Snapshot history and report
+
+Each normal run (not `SISENSE_DIAGNOSTICS_ONLY`) does:
+
+1. authenticate, retrieve, validate (unchanged from above);
+2. store one snapshot in `data/history/oe_metrics.sqlite3`, only after a validated value;
+3. compute derived analytics from stored snapshots;
+4. regenerate `reports/latest/index.html` (self-contained; open it in a browser).
+
+One snapshot per metric per UTC hour (`SNAPSHOT_GRANULARITY=hour`, or `day`).
+A second run in the same slot keeps the first stored value; the report still
+shows the new live value, but it is not stored. A failed retrieval stores no
+snapshot, records the run as `FAILED`, and regenerates the report from stored
+history marked `STALE` (or `NO HISTORY`).
+
+Comparisons (daily, 7-day, 30-day) show "Insufficient history" until enough
+real snapshots exist. They are never filled with zero or a baseline.
+
+`data/` and `reports/` contain internal business metrics and are git-ignored.
+The database contains metric values and run status only; no credentials,
+cookies, headers or payloads.
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
@@ -69,5 +91,5 @@ test run.
 ## Runtime files
 
 `runtime/auth/sisense_state.json` (saved session) and `runtime/artifacts/`
-(failure screenshots) are created automatically and are git-ignored, as is
-`.env`.
+(failure screenshots) are created automatically and are git-ignored, as are
+`.env`, `data/` (snapshot history) and `reports/` (generated dashboard).
