@@ -10,7 +10,9 @@ application sends its own request, so that request can never become a source.
 A value is accepted only from the most recently completed HTTP 200 request
 whose whole definition (dashboard, widget, datasource, measures, scope
 filters) matches the verified source definition, bound to its exact measure
-title. Anything else fails closed for that metric only. Request and response
+title. An observed request whose fingerprint equals ``expected_fingerprint``
+is kept even when later requests for that widget are not that fingerprint.
+Anything else fails closed for that metric only. Request and response
 bodies stay in memory and are never logged or persisted.
 """
 
@@ -48,20 +50,34 @@ PM_FAILED = "FAILED"
 
 
 class SourceWidgetObserver:
-    """Keeps at most ``max_candidates`` completed dashboard JAQL POSTs per source widget."""
+    """Keeps recent dashboard JAQL POSTs per source widget.
+
+    At most ``max_candidates`` requests are kept for diagnostics. A request
+    whose definition fingerprint is one of ``approved_fingerprints`` for that
+    widget is also kept, and later non-matching requests cannot evict it.
+    A newer request with the same approved fingerprint replaces the older one.
+    """
 
     def __init__(self, widget_ids: Iterable[str], url: str = VERIFIED_JAQL_URL,
-                 max_candidates: int = MAX_CANDIDATES_PER_WIDGET):
+                 max_candidates: int = MAX_CANDIDATES_PER_WIDGET,
+                 approved_fingerprints: Mapping[str, Iterable[str]] | None = None):
         self.widget_ids = frozenset(widget_ids)
         self._url = url
         self._max = max_candidates
+        self._approved_fingerprints = {
+            widget_id: frozenset(fingerprints)
+            for widget_id, fingerprints in (approved_fingerprints or {}).items()
+            if fingerprints
+        }
         self._context: BrowserContext | None = None
         self._candidates: dict[str, deque[Request]] = {}
+        self._approved: dict[str, Request] = {}
         self.target_requests_seen = 0
 
     def attach(self, context: BrowserContext) -> None:
         self._context = context
         self._candidates = {widget_id: deque(maxlen=self._max) for widget_id in self.widget_ids}
+        self._approved = {}
         self.target_requests_seen = 0
 
         def on_request_finished(request: Request) -> None:
@@ -96,10 +112,24 @@ class SourceWidgetObserver:
         kept = self._candidates.setdefault(widget_id, deque(maxlen=self._max))
         if not any(request is item for item in kept):
             kept.append(request)
+        payload = _request_payload(request)
+        fingerprint = definition_fingerprint(payload) if isinstance(payload, Mapping) else None
+        approved = self._approved_fingerprints.get(widget_id, frozenset())
+        if fingerprint is not None and fingerprint in approved:
+            self._approved[widget_id] = request
 
     def candidates(self, widget_id: str) -> list[Request]:
-        """Retained requests for one widget, oldest to most recently completed."""
-        return list(self._candidates.get(widget_id, ()))
+        """Retained requests for one widget, oldest to most recently completed.
+
+        The preserved approved request is included even after the diagnostic
+        deque has dropped it. It is appended last so the latest exact match
+        stays the candidate production validation selects.
+        """
+        items = list(self._candidates.get(widget_id, ()))
+        pinned = self._approved.get(widget_id)
+        if pinned is not None and not any(pinned is item for item in items):
+            items.append(pinned)
+        return items
 
     def missing(self) -> set[str]:
         return {widget_id for widget_id in self.widget_ids if not self._candidates.get(widget_id)}
@@ -119,6 +149,21 @@ class PassiveMetricOutcome:
 
     def failed(self, reason: str) -> "PassiveMetricOutcome":
         return PassiveMetricOutcome(self.metric_id, PM_FAILED, failure=reason)
+
+
+def approved_fingerprints_by_widget(metrics: Iterable[MetricDefinition]) -> dict[str, frozenset[str]]:
+    """Widget id to the exact production fingerprints that must not be evicted.
+
+    Metrics without ``expected_fingerprint`` (Currently Enrolled's structural
+    check, for example) contribute nothing.
+    """
+    grouped: dict[str, set[str]] = {}
+    for metric in metrics:
+        source = metric.passive_source
+        if source is None or not source.expected_fingerprint:
+            continue
+        grouped.setdefault(source.widget_id, set()).add(source.expected_fingerprint)
+    return {widget_id: frozenset(values) for widget_id, values in grouped.items()}
 
 
 def source_check(source: PassiveSource, payload: Mapping[str, Any]) -> str | None:

@@ -64,6 +64,7 @@ from metrics.passive_metrics import (
     PassiveMetricOutcome,
     SourceWidgetObserver,
     apply_control,
+    approved_fingerprints_by_widget,
     extract_passive_metric,
 )
 from metrics.runtime_validation import (
@@ -313,7 +314,10 @@ def create_source_observer(settings: Settings, metrics) -> SourceWidgetObserver 
     """Production passive sources: always on for normal runs; never in diagnostics mode."""
     if settings.diagnostics_only or not metrics:
         return None
-    return SourceWidgetObserver(m.passive_source.widget_id for m in metrics if m.passive_source)
+    return SourceWidgetObserver(
+        (m.passive_source.widget_id for m in metrics if m.passive_source),
+        approved_fingerprints=approved_fingerprints_by_widget(metrics),
+    )
 
 
 def read_passive_metrics(
