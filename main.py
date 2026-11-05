@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -45,8 +48,11 @@ from sisense.request_metadata import (
     csrf_header_matches_context_cookie,
     headers_from_observed_request,
 )
-from metrics.catalog import CURRENTLY_ENROLLED
+from metrics.catalog import CURRENTLY_ENROLLED, STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED, WAVE1_TARGETS
+from metrics.discovery import resolve_targets
+from reporting.discovery_report import write_discovery_report
 from reporting.formatting import fmt_comparison, fmt_int, fmt_time
+from sisense.discovery import DiscoveryObserver, evaluate_discovery
 from reporting.pipeline import ReportingPipeline, ReportingSummary
 from sisense.retry import RetryPolicy
 from validation.validators import extract_count_measure_value
@@ -56,6 +62,8 @@ EXIT_FAILURE = 1
 EXIT_MISSING_VERIFIED_INFO = 2
 
 RULE = "=" * 60
+DISCOVERY_QUIET_MS = 5000
+DISCOVERY_MAX_EVENTS = 500
 logger = logging.getLogger("oe_trend_pipeline")
 
 
@@ -173,10 +181,13 @@ def main() -> int:
 
     passive_observer = create_passive_observer(settings, query)
     passive_observation = None
+    discovery_observer = create_discovery_observer(settings, query)
+    discovery_outcome = None
     try:
         with sync_playwright() as playwright:
             authenticator = SisenseAuthenticator(
-                playwright, settings, extra_observers=(passive_observer,) if passive_observer else ()
+                playwright, settings,
+                extra_observers=tuple(o for o in (passive_observer, discovery_observer) if o is not None),
             )
             session = authenticator.open_session()
             try:
@@ -187,6 +198,8 @@ def main() -> int:
                 if settings.debug_session:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
                 request_metadata = obtain_request_metadata(session, authenticator.jaql_observer, settings)
+                if discovery_observer is not None:
+                    discovery_outcome = run_discovery(session, discovery_observer, query, settings)
                 if passive_observer is not None:
                     passive_observation = run_passive_observation(session, passive_observer, settings.timeouts.slow)
                 value = retrieve_value(session, settings, query, request_metadata)
@@ -221,6 +234,8 @@ def main() -> int:
     print_report(result, settings.manual_baseline, query.widget_title)
     if passive_observation is not None:
         print_passive_comparison(PassiveComparison(passive_observation, result.value))
+    if discovery_outcome is not None:
+        print_discovery_summary(discovery_outcome)
 
     if reporting is None:
         return EXIT_OK
@@ -278,6 +293,84 @@ def print_passive_comparison(comparison: PassiveComparison) -> None:
     print()
     print(RULE)
     logger.info("Passive Validation: %s", comparison.status)
+
+
+def create_discovery_observer(settings: Settings, query: JaqlQuery) -> DiscoveryObserver | None:
+    if not settings.discovery or settings.diagnostics_only:
+        return None
+    try:
+        verified_widget_id = ExpectedWidgetQuery.from_verified_query(query).widget_id
+    except ValueError:
+        verified_widget_id = None
+    return DiscoveryObserver(
+        dashboard_id=settings.dashboard_id,
+        datasource_id=VERIFIED_DATASOURCE["id"],
+        target_labels=[target.label for target in WAVE1_TARGETS],
+        verified_widget_id=verified_widget_id,
+    )
+
+
+def wait_for_dashboard_quiet(session: AuthenticatedSession, observer: DiscoveryObserver, timeouts) -> None:
+    """Passively wait until no dashboard JAQL POST completes for a quiet period (bounded)."""
+    quiet_ms = min(DISCOVERY_QUIET_MS, timeouts.default)
+    deadline = time.monotonic() + timeouts.very_slow / 1000
+    for _ in range(DISCOVERY_MAX_EVENTS):
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        try:
+            session.context.wait_for_event(
+                "requestfinished", predicate=observer.is_target, timeout=min(quiet_ms, remaining_ms)
+            )
+        except PlaywrightTimeoutError:
+            return
+
+
+@dataclass(frozen=True)
+class DiscoveryOutcome:
+    report_path: Path | None
+    counts: dict[str, int]
+
+
+def run_discovery(
+    session: AuthenticatedSession, observer: DiscoveryObserver, query: JaqlQuery, settings: Settings
+) -> DiscoveryOutcome | None:
+    """Discovery only: never raises, never sends a request, never touches history or the executive report."""
+    try:
+        wait_for_dashboard_quiet(session, observer, settings.timeouts)
+        observer.stop()
+        try:
+            expected = ExpectedWidgetQuery.from_verified_query(query)
+        except ValueError:
+            expected = None
+        result = evaluate_discovery(observer, expected)
+        metrics = resolve_targets(result)
+        counts = {state: sum(m.state == state for m in metrics)
+                  for state in (STATE_VERIFIED, STATE_DISCOVERED, STATE_PENDING)}
+        logger.info(
+            "Wave 1 discovery: %d dashboard JAQL POST(s), %d widget(s); %s",
+            result.target_requests_seen, len(result.widgets),
+            ", ".join(f"{state} {count}" for state, count in counts.items()),
+        )
+        path = None
+        if settings.reports_dir is not None:
+            path = write_discovery_report(metrics, result, settings.reports_dir, datetime.now(timezone.utc))
+            logger.info("Wave 1 discovery report: %s", path)
+        return DiscoveryOutcome(path, counts)
+    except Exception as exc:
+        observer.stop()
+        logger.error("Wave 1 discovery failed: %s", type(exc).__name__)
+        return None
+
+
+def print_discovery_summary(outcome: DiscoveryOutcome) -> None:
+    print()
+    print("Wave 1 discovery (developer review only — not used for snapshots or the executive report)")
+    for state, count in outcome.counts.items():
+        print(f"  {state:<12}{count}")
+    print(f"  Report      {outcome.report_path if outcome.report_path else 'not written (no reports directory)'}")
+    print()
+    print(RULE)
 
 
 def create_reporting(settings: Settings) -> ReportingPipeline | None:

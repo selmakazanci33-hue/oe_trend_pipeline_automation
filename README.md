@@ -93,6 +93,25 @@ stored or reported; bodies are inspected in memory and never logged or saved.
 $env:SISENSE_PASSIVE_PROOF="true"; .\.venv\Scripts\python.exe main.py
 ```
 
+## Wave 1 metric discovery (developer review only)
+
+With `SISENSE_DISCOVERY=true`, the run waits until the dashboard's own JAQL
+traffic is quiet, then summarizes each widget it loaded (titles, measure and
+dimension titles, filter counts, HTTP status, response shape) and matches the
+Wave 1 labels exactly (case and spacing only; no substrings). Results:
+
+- `VERIFIED`: catalog metric with a verified payload (Currently Enrolled People), re-checked strictly;
+- `DISCOVERED`: exactly one widget carries the label and returned a parseable HTTP 200 response;
+- `PENDING`: no exact match, ambiguous match, or unusable response.
+
+Output: `reports/discovery/wave1_metric_discovery.html` (+ `.json`). No values,
+filter values or bodies are written. Discovered metrics are never stored in
+history or shown in the executive dashboard. No extra request is sent.
+
+```powershell
+$env:SISENSE_DISCOVERY="true"; .\.venv\Scripts\python.exe main.py
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the

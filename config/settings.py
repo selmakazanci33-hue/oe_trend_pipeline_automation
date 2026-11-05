@@ -109,6 +109,7 @@ class Settings:
     reports_dir: Path | None = None
     snapshot_granularity: str = "hour"
     passive_proof: bool = False
+    discovery: bool = False
 
     @property
     def jaql_url(self) -> str:
@@ -276,4 +277,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         reports_dir=_env_path("REPORTS_DIR", PROJECT_ROOT / "reports"),
         snapshot_granularity=snapshot_granularity,
         passive_proof=_env_bool("SISENSE_PASSIVE_PROOF", False),
+        discovery=_env_bool("SISENSE_DISCOVERY", False),
     )

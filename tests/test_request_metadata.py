@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import quote
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 import main as app
 from config.settings import VERIFIED_JAQL_URL, Timeouts
 from sisense.client import SisenseJaqlClient
@@ -188,11 +190,15 @@ class DashboardContext(FakeContext):
         self._handlers.setdefault(event, []).append(handler)
 
     def wait_for_event(self, event, predicate=None, timeout=None):
+        """The dashboard's requests complete once; afterwards the dashboard is quiet."""
+        if getattr(self, "_fired", False) or not self._observed:
+            raise PlaywrightTimeoutError("Timeout")
+        self._fired = True
         for request in self._observed:
             for name in ("request", "requestfinished"):
                 for handler in self._handlers.get(name, []):
                     handler(request)
-        return self._observed[0] if self._observed else None
+        return self._observed[0]
 
 
 class MainNormalModeTests(unittest.TestCase):

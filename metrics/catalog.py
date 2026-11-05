@@ -121,6 +121,43 @@ ROADMAP: tuple[RoadmapItem, ...] = (
 )
 
 
+# Verification states. Only VERIFIED metrics (active, with a verified payload
+# builder) may produce snapshots or appear in the executive report. DISCOVERED
+# is a runtime discovery result (structure only) and never a MetricDefinition.
+STATE_VERIFIED = "VERIFIED"
+STATE_DISCOVERED = "DISCOVERED"
+STATE_PENDING = "PENDING"
+
+
+@dataclass(frozen=True)
+class DiscoveryTarget:
+    """A business label to look for, exactly, in the dashboard's own JAQL requests."""
+
+    metric_id: str
+    label: str
+    module_id: str
+
+
+WAVE1_TARGETS: tuple[DiscoveryTarget, ...] = (
+    DiscoveryTarget("applications_started", "Applications Started", "applications"),
+    DiscoveryTarget("submitted_applications", "Submitted Applications", "applications"),
+    DiscoveryTarget("total_applicants", "Total Applicants", "applications"),
+    DiscoveryTarget(CURRENTLY_ENROLLED_ID, WIDGET_TITLE, "enrollment"),
+    DiscoveryTarget("pct_effectuated", "% Effectuated", "enrollment"),
+    DiscoveryTarget("new", "New", "enrollment"),
+    DiscoveryTarget("active", "Active", "enrollment"),
+    DiscoveryTarget("passive", "Passive", "enrollment"),
+    DiscoveryTarget("cancelled", "Cancelled", "enrollment"),
+    DiscoveryTarget("terminated", "Terminated", "enrollment"),
+)
+
+
+def catalog_state(metric_id: str) -> str:
+    """Static state: VERIFIED for active catalogued metrics, otherwise PENDING until discovered at runtime."""
+    metric = METRICS.get(metric_id)
+    return STATE_VERIFIED if metric is not None and metric.status == STATUS_ACTIVE else STATE_PENDING
+
+
 def get_metric(metric_id: str) -> MetricDefinition:
     try:
         return METRICS[metric_id]
