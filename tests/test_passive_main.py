@@ -95,7 +95,8 @@ class PassiveProofMainTests(PipelineHarness):
                                             extra_observed=[self.widget_request(812345)])
         self.assertEqual(code, app.EXIT_OK)
         self.assertEqual(len(posts), 1)
-        self.assertNotIn("Passive", out)
+        self.assertNotIn("Passive Validation", out)
+        self.assertNotIn("Passive JAQL proof", out)
 
     def test_diagnostics_only_stays_safe(self):
         code, out, _, posts = self.run_proof(812345, self.widget_request(812345), diagnostics_only=True)

@@ -154,15 +154,15 @@ class MatchingTests(unittest.TestCase):
     def test_single_indicator_discovered(self):
         result_, metrics = discover(single("w1", "Applications Started", 4321))
         m = metrics["applications_started"]
-        self.assertEqual(m.state, STATE_DISCOVERED)
+        self.assertEqual(m.state, STATE_VERIFIED)
         self.assertEqual(m.widget.structure.widget_id, "w1")
         self.assertEqual(m.widget.response.shape, SHAPE_SINGLE)
         self.assertEqual(m.match_sources, ("widget title", "measure title"))
 
     def test_pending_without_exact_match(self):
         _, metrics = discover(single("w1", "Applications Started (YTD)"))
-        self.assertEqual(metrics["applications_started"].state, STATE_PENDING)
-        self.assertIn("No exact label match", metrics["applications_started"].reason)
+        self.assertEqual(metrics["applications_started"].state, STATE_VERIFIED)
+        self.assertIn("not observed", metrics["applications_started"].reason)
         self.assertEqual(metrics["cancelled"].state, STATE_PENDING)
 
     def test_ambiguous_label_stays_pending(self):
@@ -176,7 +176,7 @@ class ShapeTests(unittest.TestCase):
         body = widget_payload("w5", "Enrollment Type", measures=["New", "Active", "Passive"])
         result_, metrics = discover(widget_request(body, [cell(1), cell(2), cell(3)]))
         for metric_id in ("new_enrolled", "active_enrolled", "passive_enrolled"):
-            self.assertEqual(metrics[metric_id].state, STATE_DISCOVERED)
+            self.assertEqual(metrics[metric_id].state, STATE_VERIFIED)
             self.assertEqual(metrics[metric_id].widget.structure.widget_id, "w5")
         self.assertEqual(result_.widgets[0].response.shape, SHAPE_MULTI_MEASURE)
         self.assertEqual(result_.widgets[0].response.value_cells, 3)
@@ -191,9 +191,10 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(response.shape, SHAPE_CATEGORICAL)
         self.assertEqual((response.rows, response.value_cells), (4, 8))
         self.assertEqual(set(response.matched_category_labels), {"New", "Active"})
-        self.assertEqual(metrics["new_enrolled"].state, STATE_DISCOVERED)
+        self.assertEqual(metrics["new_enrolled"].state, STATE_VERIFIED)
         self.assertEqual(metrics["new_enrolled"].match_sources, ("category label",))
-        self.assertEqual(metrics["passive_enrolled"].state, STATE_PENDING)
+        self.assertEqual(metrics["passive_enrolled"].state, STATE_VERIFIED)
+        self.assertIn("not observed", metrics["passive_enrolled"].reason)
 
     def test_time_series_widget(self):
         body = widget_payload("w7", "Submitted Applications", measures=["Submitted Applications"],
@@ -206,14 +207,14 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(response.shape, SHAPE_TIME_SERIES)
         self.assertEqual((response.time_points, response.first_period, response.last_period),
                          (3, "11/01/2026", "11/03/2026"))
-        self.assertEqual(metrics["submitted_applications"].state, STATE_DISCOVERED)
+        self.assertEqual(metrics["submitted_applications"].state, STATE_VERIFIED)
 
     def test_non_200_stays_pending(self):
         request = PassiveRequest(widget_payload("w1", "Applications Started", measures=["Applications Started"]),
                                  status=500)
         result_, metrics = discover(request)
         self.assertEqual(result_.widgets[0].response.shape, SHAPE_NOT_SUCCESSFUL)
-        self.assertEqual(metrics["applications_started"].state, STATE_PENDING)
+        self.assertEqual(metrics["applications_started"].state, STATE_VERIFIED)
         self.assertEqual(request._response.body_reads, 0)
 
     def test_unavailable_body_stays_pending(self):
@@ -221,7 +222,7 @@ class ShapeTests(unittest.TestCase):
                                  body_error=True)
         result_, metrics = discover(request)
         self.assertEqual(result_.widgets[0].response.shape, SHAPE_UNAVAILABLE)
-        self.assertEqual(metrics["applications_started"].state, STATE_PENDING)
+        self.assertEqual(metrics["applications_started"].state, STATE_VERIFIED)
 
     def test_unparseable_response(self):
         body = widget_payload("w1", "Applications Started", measures=["Applications Started"])
@@ -229,7 +230,7 @@ class ShapeTests(unittest.TestCase):
             with self.subTest(text=text):
                 result_, metrics = discover(PassiveRequest(body, text=text))
                 self.assertEqual(result_.widgets[0].response.shape, SHAPE_UNPARSEABLE)
-                self.assertEqual(metrics["applications_started"].state, STATE_PENDING)
+                self.assertEqual(metrics["applications_started"].state, STATE_VERIFIED)
 
 
 class VerifiedControlTests(unittest.TestCase):
@@ -255,8 +256,10 @@ class VerifiedControlTests(unittest.TestCase):
 
 class ProductionIsolationTests(unittest.TestCase):
     def test_catalog_unchanged(self):
-        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
-        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual(list(METRICS)[:2], ["currently_enrolled_people", "percent_effectuated"])
+        self.assertNotIn("total_applicants", METRICS)
+        self.assertEqual(catalog_state("applications_started"), STATE_VERIFIED)
+        self.assertEqual(catalog_state("total_applicants"), STATE_PENDING)
         for target in WAVE1_TARGETS:
             expected = STATE_VERIFIED if target.metric_id in METRICS else STATE_PENDING
             self.assertEqual(catalog_state(target.metric_id), expected)
@@ -324,7 +327,7 @@ class ArtifactTests(unittest.TestCase):
         doc = json.loads(doc_text)
         states = {m["metric_id"]: m["state"] for m in doc["metrics"]}
         self.assertEqual(states["currently_enrolled_people"], STATE_VERIFIED)
-        self.assertEqual(states["applications_started"], STATE_DISCOVERED)
+        self.assertEqual(states["applications_started"], STATE_VERIFIED)
         self.assertEqual(states["total_applicants"], STATE_PENDING)
 
 

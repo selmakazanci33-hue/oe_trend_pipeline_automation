@@ -39,10 +39,14 @@ class PassiveSource:
     measure_title: str | None  # None: the widget's single measure (matched by widget title)
     expected_definition: Callable[[], JaqlQuery] | None = None
     expected_fingerprint: str | None = None
+    # True: expected_fingerprint is taken from a previously recorded STABLE
+    # observation (never invented, never taken from the current request).
+    approved_from_observations: bool = False
 
     @property
     def verifiable(self) -> bool:
-        return self.expected_definition is not None or self.expected_fingerprint is not None
+        return (self.expected_definition is not None or self.expected_fingerprint is not None
+                or self.approved_from_observations)
 
 
 @dataclass(frozen=True)
@@ -164,7 +168,48 @@ PERCENT_EFFECTUATED = MetricDefinition(
     section_id=SECTION_ENROLLMENT_METRICS,
 )
 
-METRICS: dict[str, MetricDefinition] = {m.metric_id: m for m in (CURRENTLY_ENROLLED, PERCENT_EFFECTUATED)}
+def _passive_production(metric_id: str, name: str, module_id: str, widget_id: str, widget_title: str,
+                        measure_title: str | None, section_id: str | None) -> MetricDefinition:
+    """Production passive metric. Fingerprint is bound at runtime from STABLE observation evidence."""
+    bound = f"'{measure_title}' measure" if measure_title else "single measure"
+    return MetricDefinition(
+        metric_id=metric_id,
+        display_name=name,
+        category=module_id.title(),
+        unit="people" if module_id == "enrollment" else "count",
+        value_format="integer",
+        source=SOURCE_LABEL,
+        dashboard=VERIFIED_DASHBOARD_TITLE,
+        plan_year=PLAN_YEAR,
+        description=f"{bound} of the dashboard widget '{widget_title}'.",
+        history_enabled=True,
+        status=STATUS_ACTIVE,
+        module_id=module_id,
+        passive_source=PassiveSource(widget_id, widget_title, measure_title, approved_from_observations=True),
+        section_id=section_id,
+    )
+
+
+APPLICATIONS_STARTED = _passive_production(
+    "applications_started", "Applications Started", "applications",
+    "6a98048ccef60720fe7f9b44", "Applications Started", None, None)
+SUBMITTED_APPLICATIONS = _passive_production(
+    "submitted_applications", "Submitted Applications", "applications",
+    "6a98048ccef60720fe7f9b66", "Submitted Applications", None, None)
+NEW_ENROLLED = _passive_production(
+    "new_enrolled", "New", "enrollment",
+    "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "NEW", SECTION_ENROLLMENT_STATUS)
+ACTIVE_ENROLLED = _passive_production(
+    "active_enrolled", "Active", "enrollment",
+    "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "ACTIVE", SECTION_ENROLLMENT_STATUS)
+PASSIVE_ENROLLED = _passive_production(
+    "passive_enrolled", "Passive", "enrollment",
+    "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "PASSIVE", SECTION_ENROLLMENT_STATUS)
+
+METRICS: dict[str, MetricDefinition] = {m.metric_id: m for m in (
+    CURRENTLY_ENROLLED, PERCENT_EFFECTUATED, APPLICATIONS_STARTED, SUBMITTED_APPLICATIONS,
+    NEW_ENROLLED, ACTIVE_ENROLLED, PASSIVE_ENROLLED,
+)}
 
 
 def _candidate(metric_id: str, name: str, module_id: str, widget_id: str, widget_title: str,
@@ -187,34 +232,18 @@ def _candidate(metric_id: str, name: str, module_id: str, widget_id: str, widget
     )
 
 
-# Identity observed in the controlled Wave 1 runs (widget id + exact measure).
-# No verified filter definition exists yet for these widgets, so they are NOT
-# production metrics: no snapshots, PENDING in the executive report. To promote
-# one, set ``expected_fingerprint`` from a controlled run's runtime-validation
-# artifact (``definition_fingerprint``) whose values matched the Sisense UI,
-# then move it into METRICS with STATUS_ACTIVE.
+# Remaining validation-only identities. Total Applicants stays here because the
+# latest controlled run did not observe its widget. Do not promote from this
+# dict without a STABLE/ELIGIBLE observation of that widget.
 PROMOTION_CANDIDATES: dict[str, MetricDefinition] = {m.metric_id: m for m in (
-    _candidate("applications_started", "Applications Started", "applications",
-               "6a98048ccef60720fe7f9b44", "Applications Started", None),
-    _candidate("submitted_applications", "Submitted Applications", "applications",
-               "6a98048ccef60720fe7f9b66", "Submitted Applications", None),
     _candidate("total_applicants", "Total Applicants", "applications",
                "6a98048ccef60720fe7f9b4f", "Applicants On Submitted Applications", "Total Applicants"),
-    _candidate("new_enrolled", "New", "enrollment",
-               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "NEW",
-               SECTION_ENROLLMENT_STATUS),
-    _candidate("active_enrolled", "Active", "enrollment",
-               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "ACTIVE",
-               SECTION_ENROLLMENT_STATUS),
-    _candidate("passive_enrolled", "Passive", "enrollment",
-               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "PASSIVE",
-               SECTION_ENROLLMENT_STATUS),
 )}
 
 MODULES: tuple[Module, ...] = (
     Module("overview", "Executive Overview", STATUS_ACTIVE),
     Module("enrollment", "Enrollment", STATUS_ACTIVE),
-    Module("applications", "Applications", STATUS_PENDING),
+    Module("applications", "Applications", STATUS_ACTIVE),
     Module("issuers", "Issuers", STATUS_PENDING),
     Module("ede", "EDE", STATUS_PENDING),
     Module("financial_assistance", "Financial Assistance", STATUS_PENDING),
@@ -226,12 +255,7 @@ MODULES: tuple[Module, ...] = (
 
 # Roadmap only: names from the existing business dashboard. No payloads, no queries.
 ROADMAP: tuple[RoadmapItem, ...] = (
-    RoadmapItem("Applications Started", "applications"),
-    RoadmapItem("Submitted Applications", "applications"),
     RoadmapItem("Total Applicants", "applications"),
-    RoadmapItem("New", "enrollment", section_id=SECTION_ENROLLMENT_STATUS),
-    RoadmapItem("Active", "enrollment", section_id=SECTION_ENROLLMENT_STATUS),
-    RoadmapItem("Passive", "enrollment", section_id=SECTION_ENROLLMENT_STATUS),
     RoadmapItem("Cancelled", "enrollment", section_id=SECTION_ENROLLMENT_STATUS_CHANGES),
     RoadmapItem("Terminated", "enrollment", section_id=SECTION_ENROLLMENT_STATUS_CHANGES),
     RoadmapItem("Metal Tier", "enrollment", section_id=SECTION_PLAN_DISTRIBUTION),

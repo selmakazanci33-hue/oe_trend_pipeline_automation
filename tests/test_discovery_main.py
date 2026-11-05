@@ -47,8 +47,8 @@ class DiscoveryMainTests(PipelineHarness):
         states = {m["metric_id"]: m["state"] for m in doc["metrics"]}
         self.assertEqual(states, {
             "currently_enrolled_people": "VERIFIED", "percent_effectuated": "VERIFIED",
-            "applications_started": "DISCOVERED", "submitted_applications": "DISCOVERED",
-            "new_enrolled": "DISCOVERED", "active_enrolled": "DISCOVERED", "passive_enrolled": "DISCOVERED",
+            "applications_started": "VERIFIED", "submitted_applications": "VERIFIED",
+            "new_enrolled": "VERIFIED", "active_enrolled": "VERIFIED", "passive_enrolled": "VERIFIED",
             "total_applicants": "PENDING", "cancelled": "PENDING", "terminated": "PENDING",
         })
         shapes = {w["widget_id"]: w["response"]["shape"] for w in doc["widgets"]}

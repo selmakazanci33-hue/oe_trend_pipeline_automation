@@ -105,7 +105,7 @@ class HtmlTests(unittest.TestCase):
 
     def test_pending_modules_show_no_values(self):
         html = visible_html(live_model(series((0, 806_000))))
-        for module_id in ("applications", "issuers", "ede", "financial_assistance", "operations",
+        for module_id in ("issuers", "ede", "financial_assistance", "operations",
                           "dmi_notices", "contact_center", "agent_broker"):
             section = re.search(rf'id="view-{module_id}".*?</div>', html, re.S).group(0)
             self.assertIn(PENDING_MESSAGE, section)

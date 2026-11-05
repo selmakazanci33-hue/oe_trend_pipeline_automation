@@ -55,7 +55,7 @@ class SnapshotCreationTests(StoreTestCase):
     def test_invalid_results_rejected(self):
         bad = [
             {"value": -1}, {"value": True}, {"value": float("nan")}, {"value": 12.5}, {"value": "812000"},
-            {"metric": "applications_started"}, {"plan_year": 2026},
+            {"metric": "total_applicants"}, {"plan_year": 2026},
         ]
         self.store.start_run("r1")
         for overrides in bad:

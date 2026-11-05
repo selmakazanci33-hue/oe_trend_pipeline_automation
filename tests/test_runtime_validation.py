@@ -71,7 +71,7 @@ class SevenMetricExtractionTests(unittest.TestCase):
                 self.assertEqual(row.status, RV_VALUE_EXTRACTED, row.reason)
                 self.assertEqual(row.value, value)
                 self.assertEqual(row.binding, binding)
-                self.assertEqual(row.production_status, "VERIFIED" if metric_id == "percent_effectuated"
+                self.assertEqual(row.production_status, "VERIFIED" if metric_id in METRICS
                                  else "VALIDATION ONLY — awaiting verified filter fingerprint")
                 self.assertTrue(row.definition_fingerprint.startswith("sha256:"))
         self.assertIsInstance(rows["new_enrolled"].value, int)
@@ -244,8 +244,11 @@ class PendingAndControlTests(unittest.TestCase):
 
     def test_catalog_not_promoted(self):
         runtime_rows(*natural_wave1())
-        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
-        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people", "percent_effectuated"])
+        self.assertIn("applications_started", METRICS)
+        self.assertNotIn("total_applicants", METRICS)
+        self.assertEqual(list(METRICS)[:2], ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual([m.metric_id for m in active_metrics()][:2],
+                         ["currently_enrolled_people", "percent_effectuated"])
 
 
 class ArtifactAndSafetyTests(unittest.TestCase):

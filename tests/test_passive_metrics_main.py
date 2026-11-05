@@ -75,12 +75,14 @@ class PassiveMetricsMainTests(PassiveMetricsHarness):
         self.run_pipeline(812345, self.ce_widget())
         chips = self.pending_chips()
         self.assertNotIn("% Effectuated", chips)
-        for name in ("Cancelled", "Terminated", "Metal Tier", "New", "Active", "Passive",
-                     "Applications Started", "Submitted Applications", "Total Applicants"):
+        for name in ("Cancelled", "Terminated", "Metal Tier", "Total Applicants"):
             self.assertIn(name, chips)
+        for name in ("New", "Active", "Passive", "Applications Started", "Submitted Applications"):
+            self.assertNotIn(name, chips)
         html = self.report_html()
-        self.assertIn('data-view="applications">Applications<span class="nav-tag">Pending</span>', html)
-        self.assertNotIn('data-metric="applications_started"', html)
+        self.assertIn('data-view="applications">Applications</button>', html)
+        self.assertNotIn('data-view="applications">Applications<span class="nav-tag">Pending</span>', html)
+        self.assertIn('data-metric="applications_started"', html)
 
     def test_change_labelled_in_percentage_points(self):
         self.run_pipeline(812345, self.ce_widget(pct=0.9), at=RUN_TIME - timedelta(hours=3))
@@ -182,7 +184,8 @@ class PassiveMetricsMainTests(PassiveMetricsHarness):
         self.assertIn("NOT AVAILABLE", self.card("percent_effectuated"))
         chips = self.pending_chips()
         self.assertNotIn("Applications Started", chips)
-        self.assertIn("Submitted Applications", chips)
+        self.assertNotIn("Submitted Applications", chips)
+        self.assertIn("Total Applicants", chips)
 
     def test_unapproved_candidates_never_stored_even_if_observed(self):
         _, request = self.promoted_started()

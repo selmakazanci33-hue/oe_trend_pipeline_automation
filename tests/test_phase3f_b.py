@@ -37,7 +37,11 @@ from tests.test_passive_metrics_main import PassiveMetricsHarness
 from tests.test_pipeline_main import RUN_TIME
 from tests.test_session_context import FakeResponse
 
-CANDIDATE = {m: c.passive_source for m, c in PROMOTION_CANDIDATES.items()}
+CANDIDATE = {
+    metric_id: (METRICS[metric_id] if metric_id in METRICS else PROMOTION_CANDIDATES[metric_id]).passive_source
+    for metric_id in ("applications_started", "submitted_applications", "total_applicants",
+                      "new_enrolled", "active_enrolled", "passive_enrolled")
+}
 VALUES = {"applications_started": 300_011, "submitted_applications": 300_022, "total_applicants": 300_033,
           "new_enrolled": 3_044, "active_enrolled": 30_055, "passive_enrolled": 300_066}
 STARTED_MEASURE = "Count of started applications"
@@ -217,7 +221,7 @@ class EvidenceMainTests(PassiveMetricsHarness):
         code, out, _, posts = self.evidence_run()
         self.assertEqual((code, len(posts)), (0, 1), "exactly one application request; evidence adds none")
         c = self.candidates()
-        self.assertEqual(set(c), set(PROMOTION_CANDIDATES))
+        self.assertEqual(set(c), {"total_applicants"})
         for metric_id, item in c.items():
             with self.subTest(metric_id):
                 self.assertEqual(item["widget_id"], CANDIDATE[metric_id].widget_id)
@@ -233,51 +237,22 @@ class EvidenceMainTests(PassiveMetricsHarness):
     def test_exact_measure_titles_recorded_never_invented(self):
         self.evidence_run()
         c = self.candidates()
-        self.assertEqual(c["applications_started"]["measure_titles"], [STARTED_MEASURE])
-        self.assertEqual(c["applications_started"]["bound_measure_title"], STARTED_MEASURE)
-        self.assertEqual(c["submitted_applications"]["bound_measure_title"], SUBMITTED_MEASURE)
+        self.assertEqual(c["total_applicants"]["measure_titles"], ["Total Applicants"])
         self.assertEqual(c["total_applicants"]["bound_measure_title"], "Total Applicants")
-        self.assertEqual(c["applications_started"]["measure_count"], 1)
-        self.assertNotEqual(c["applications_started"]["bound_measure_title"], "Applications Started")
+        self.assertEqual(c["total_applicants"]["measure_count"], 1)
 
     def test_missing_measure_title_fails_closed(self):
-        requests = candidate_requests(mutate={"applications_started": lambda b: b["metadata"][0]["jaql"].pop("title")})
+        requests = candidate_requests(mutate={"total_applicants": lambda b: b["metadata"][0]["jaql"].pop("title")})
         self.evidence_run(requests)
-        item = self.candidates()["applications_started"]
+        item = self.candidates()["total_applicants"]
         self.assertFalse(item["eligible_for_future_promotion"])
         self.assertEqual(item["measure_titles"], [])
         self.assertIsNone(item["runtime_value"])
 
-    def test_new_active_passive_shared_widget(self):
+    def test_promoted_metrics_are_not_validation_candidates(self):
         self.evidence_run()
-        c = self.candidates()
-        prints = {c[m]["definition_fingerprint"] for m in ("new_enrolled", "active_enrolled", "passive_enrolled")}
-        self.assertEqual(len(prints), 1)
-        self.assertEqual([c[m]["bound_measure_title"] for m in ("new_enrolled", "active_enrolled", "passive_enrolled")],
-                         ["NEW", "ACTIVE", "PASSIVE"])
-        shared = self.evidence()["shared_widgets"]
-        self.assertEqual(len(shared), 1)
-        self.assertEqual(shared[0]["widget_id"], CANDIDATE["new_enrolled"].widget_id)
-        self.assertTrue(shared[0]["structurally_eligible_together"])
-
-    def test_reordered_measures_bind_by_identity(self):
-        requests = candidate_requests(drop=("nap",))
-        body = nap_payload(order=("PASSIVE", "NEW", "ACTIVE"))
-        requests.append(widget_request(body, [cell(30), cell(10), cell(20)]))
-        self.evidence_run(requests)
-        c = self.candidates()
-        self.assertEqual([c[m]["runtime_value"] for m in ("new_enrolled", "active_enrolled", "passive_enrolled")],
-                         [10, 20, 30])
-
-    def test_no_positional_fallback(self):
-        requests = candidate_requests(drop=("nap",))
-        requests.append(widget_request(nap_payload(), [cell(1), cell(2)]))
-        self.evidence_run(requests)
-        c = self.candidates()
-        for m in ("new_enrolled", "active_enrolled", "passive_enrolled"):
-            self.assertIsNone(c[m]["runtime_value"])
-            self.assertFalse(c[m]["eligible_for_future_promotion"])
-        self.assertFalse(self.evidence()["shared_widgets"][0]["structurally_eligible_together"])
+        self.assertEqual(set(self.candidates()), {"total_applicants"})
+        self.assertEqual(self.evidence()["shared_widgets"], [])
 
     def test_observation_a_persisted_safely(self):
         self.evidence_run(candidate_requests(guid="GUID-SENTINEL", sentinel="RESP-SENTINEL"))
@@ -297,9 +272,7 @@ class EvidenceMainTests(PassiveMetricsHarness):
         self.evidence_run(candidate_requests(guid="GUID-B", drop=("nap",), mutate=mutate),
                           at=RUN_TIME + timedelta(days=1))
         c = self.candidates()
-        self.assertEqual(c["applications_started"]["fingerprint_stability"], FP_STABLE)
         self.assertEqual(c["total_applicants"]["fingerprint_stability"], FP_CHANGED)
-        self.assertEqual(c["new_enrolled"]["fingerprint_stability"], FP_MISSING)
         self.assertEqual(self.evidence()["fingerprint_comparison"]["observation_a_observed_at_utc"],
                          "2026-11-10T14:30:00Z")
         self.assertEqual(len(json.loads(self.log_path().read_text())["observations"]), 2)
@@ -336,8 +309,9 @@ class EvidenceMainTests(PassiveMetricsHarness):
             self.assertNotIn(f"{value:,}", html)
         for term in DEVELOPER_TERMS:
             self.assertNotIn(term, html)
-        self.assertIn('data-view="applications">Applications<span class="nav-tag">Pending</span>', html)
-        self.assertIn(">LIVE</span></dd>", html.split('<dl class="meta">')[1])
+        self.assertIn('data-view="applications">Applications</button>', html)
+        self.assertNotIn('data-view="applications">Applications<span class="nav-tag">Pending</span>', html)
+        self.assertIn(">PARTIAL</span></dd>", html.split('<dl class="meta">')[1])
         self.assert_no_secrets_anywhere(out, logs)
         files = [p for p in self.root.rglob("*") if p.is_file()]
         for content in [p.read_bytes().decode("utf-8", errors="ignore") for p in files] + [out, logs]:
@@ -352,7 +326,7 @@ class HeaderMainTests(PassiveMetricsHarness):
 
     def test_live_partial_stale_not_available_end_to_end(self):
         self.run_pipeline(700_000, self.ce_widget(ce=700_000, pct=0.9), at=RUN_TIME - timedelta(hours=3))
-        self.assertIn(">LIVE</span></dd>", self.header())
+        self.assertIn(">PARTIAL</span></dd>", self.header())
         self.run_pipeline(700_100, at=RUN_TIME - timedelta(hours=2))
         self.assertIn(">PARTIAL</span></dd>", self.header())
         self.assertIn("banner-partial", self.report_html())

@@ -122,13 +122,14 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
     def test_new_active_passive_under_enrollment_status(self):
         self.full_run()
         block = section(self.report_html(), SECTION_ENROLLMENT_STATUS)
-        for name in ("New", "Active", "Passive"):
-            self.assertIn(name, block)
-            self.assertIn(f"<span>{name}</span><span class=\"badge badge-none\">PENDING</span>", block)
+        for metric_id, name in (("new_enrolled", "New"), ("active_enrolled", "Active"),
+                                ("passive_enrolled", "Passive")):
+            self.assertIn(f'data-metric="{metric_id}"', block)
+            self.assertIn(name.upper() if name != "New" else "NEW", self.card(metric_id))
+            self.assertNotIn("PENDING", self.card(metric_id))
         self.assertNotIn("Cancelled", block)
         self.assertNotIn("Terminated", block)
         self.assertNotIn("Metal Tier", block)
-        self.assertNotIn("badge-source", block)
 
     def test_cancelled_terminated_under_status_changes(self):
         self.full_run()
@@ -151,10 +152,11 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
     def test_applications_order_started_submitted_total(self):
         self.full_run()
         names = [item.name for item in roadmap_for("applications")]
-        self.assertEqual(names, ["Applications Started", "Submitted Applications", "Total Applicants"])
+        self.assertEqual(names, ["Total Applicants"])
         page = applications_view(self.report_html())
-        self.assertLess(page.index("Applications Started"), page.index("Submitted Applications"))
-        self.assertLess(page.index("Submitted Applications"), page.index("Total Applicants"))
+        self.assertLess(page.index('data-metric="applications_started"'),
+                        page.index('data-metric="submitted_applications"'))
+        self.assertLess(page.index('data-metric="submitted_applications"'), page.index("Total Applicants"))
 
     def test_percent_effectuated_definition_is_independent(self):
         self.full_run()
@@ -174,9 +176,8 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
     def test_metric_definitions_are_catalog_driven(self):
         self.full_run()
         defs = section(self.report_html(), "metric_definitions")
-        self.assertEqual([m.metric_id for m in METRICS.values()],
-                         ["currently_enrolled_people", "percent_effectuated"])
-        for metric in METRICS.values():
+        self.assertEqual(list(METRICS)[:2], ["currently_enrolled_people", "percent_effectuated"])
+        for metric in (m for m in METRICS.values() if m.module_id == "enrollment"):
             block = re.search(rf'data-definition="{metric.metric_id}".*?</article>', defs, re.S).group(0)
             self.assertIn(metric.display_name, block)
             self.assertIn(metric.category, block)
@@ -203,14 +204,15 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
             self.assertIn("SOURCE", card)
         self.assertNotIn("PENDING", self.card("percent_effectuated"))
         self.assertIn("SOURCE", self.card("percent_effectuated"))
-        for section_id in (SECTION_ENROLLMENT_STATUS, SECTION_ENROLLMENT_STATUS_CHANGES, SECTION_PLAN_DISTRIBUTION):
+        self.assertNotIn("PENDING", section(html, SECTION_ENROLLMENT_STATUS))
+        for section_id in (SECTION_ENROLLMENT_STATUS_CHANGES, SECTION_PLAN_DISTRIBUTION):
             block = section(html, section_id)
             self.assertIn("PENDING", block)
             self.assertNotIn("badge-source", block)
             self.assertNotIn("LIVE", block)
         apps = applications_view(html)
         self.assertIn("PENDING", apps)
-        self.assertNotIn("badge-source", apps)
+        self.assertIn("badge-source", apps)
 
     def test_percent_effectuated_history_stays_on_its_card(self):
         self.run_pipeline(611_000, self.ce_widget(ce=611_000, pct=0.800000), at=RUN_TIME - timedelta(hours=3))
@@ -241,13 +243,14 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
         self.assertNotIn("Additional Enrollment Metrics", text)
 
     def test_production_catalog_unchanged(self):
-        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual(list(METRICS)[:2], ["currently_enrolled_people", "percent_effectuated"])
         self.assertEqual(CURRENTLY_ENROLLED.status, "active")
         self.assertEqual(PERCENT_EFFECTUATED.status, "active")
         pending_names = {item.name for item in ROADMAP}
-        for name in ("Applications Started", "Submitted Applications", "Total Applicants", "New", "Active",
-                     "Passive", "Cancelled", "Terminated", "Metal Tier"):
+        for name in ("Total Applicants", "Cancelled", "Terminated", "Metal Tier"):
             self.assertIn(name, pending_names)
+        for name in ("Applications Started", "Submitted Applications", "New", "Active", "Passive"):
+            self.assertNotIn(name, pending_names)
 
     def test_missing_live_value_does_not_invent_pending_or_source_for_roadmap(self):
         self.run_pipeline(None, responses=[FakeResponse(401, "{}")])
@@ -255,5 +258,5 @@ class EnrollmentTaxonomyTests(PassiveMetricsHarness):
         kpi = re.search(r'<section class="card kpi">(.*?)</section>', html, re.S).group(1)
         self.assertIn("NOT AVAILABLE", kpi)
         self.assertNotIn("PENDING", kpi)
-        self.assertIn("PENDING", section(html, SECTION_ENROLLMENT_STATUS))
-        self.assertNotIn("badge-source", section(html, SECTION_ENROLLMENT_STATUS))
+        self.assertNotIn("PENDING", section(html, SECTION_ENROLLMENT_STATUS))
+        self.assertIn("badge-source", section(html, SECTION_ENROLLMENT_STATUS))

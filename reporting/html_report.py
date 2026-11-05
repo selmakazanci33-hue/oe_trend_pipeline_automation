@@ -391,6 +391,16 @@ def _module_view(model: ReportModel, module_id: str, title: str) -> str:
     return _panels_section(panels, f"{title} Metrics") + pending
 
 
+def _applications_view(model: ReportModel) -> str:
+    panels = model.panels_for("applications")
+    pending = _pending_items(model, "applications")
+    cards = "".join(_panel_card(p) for p in panels)
+    chips = f'<ul class="roadmap compact">{_roadmap_chips(pending)}</ul>' if pending else ""
+    body = f'<div class="grid grid-4">{cards}</div>' if panels else ""
+    return (f'<section data-section="applications_flow"><div class="section-head"><h2>Applications</h2></div>'
+            f"{body}{chips}</section>")
+
+
 def _enrollment_view(model: ReportModel) -> str:
     grouped = "".join(
         _grouped_section(model, section)
@@ -423,6 +433,8 @@ def render_html(model: ReportModel) -> str:
                        + _quality_section(model))
         elif module.module_id == "enrollment":
             content = _enrollment_view(model)
+        elif module.module_id == "applications":
+            content = _applications_view(model)
         else:
             content = _module_view(model, module.module_id, module.title)
         hidden = "" if module.module_id == "overview" else " hidden"

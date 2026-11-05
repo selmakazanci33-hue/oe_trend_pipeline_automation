@@ -18,6 +18,10 @@ from metrics.catalog import (
     PassiveSource,
     passive_metrics,
 )
+
+
+def catalog_metric(metric_id):
+    return METRICS[metric_id] if metric_id in METRICS else PROMOTION_CANDIDATES[metric_id]
 from metrics.passive_metrics import (
     PM_EXTRACTED,
     PM_FAILED,
@@ -35,12 +39,12 @@ from tests.discovery_fixtures import cell, rows_text, widget_payload, widget_req
 from tests.passive_fixtures import PassiveRequest, measure, payload, response_text, scope
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-NAP = PROMOTION_CANDIDATES["new_enrolled"].passive_source
+NAP = catalog_metric("new_enrolled").passive_source
 
 
 def candidate_payload(metric_id, measures=None, **kw):
-    """A dashboard request for a candidate's real widget identity (structure and values invented)."""
-    source = PROMOTION_CANDIDATES[metric_id].passive_source
+    """A dashboard request for a catalog widget identity (structure and values invented)."""
+    source = catalog_metric(metric_id).passive_source
     if measures is None:
         measures = [source.measure_title or "Count of applications"]
     return widget_payload(source.widget_id, source.widget_title, measures=measures, **kw)
@@ -51,9 +55,10 @@ def nap_payload(order=("NEW", "ACTIVE", "PASSIVE"), **kw):
 
 
 def promoted(metric_id, approved_payload):
-    """Test-only promotion: a candidate whose fingerprint was approved from ``approved_payload``."""
-    candidate = PROMOTION_CANDIDATES[metric_id]
-    source = replace(candidate.passive_source, expected_fingerprint=definition_fingerprint(approved_payload))
+    """Test-only: bind an invented payload's fingerprint so extract can run without the observation log."""
+    candidate = catalog_metric(metric_id)
+    source = replace(candidate.passive_source, expected_fingerprint=definition_fingerprint(approved_payload),
+                     approved_from_observations=False)
     return replace(candidate, status=STATUS_ACTIVE, passive_source=source)
 
 
@@ -79,12 +84,11 @@ class CatalogPromotionTests(unittest.TestCase):
         self.assertEqual(m.passive_source.measure_title, "% Effectuated")
         self.assertEqual(m.passive_source.widget_id, json.loads(PassiveRequest(payload()).post_data)["widget"]
                          .split(";")[0])
-        self.assertEqual([x.metric_id for x in passive_metrics()], ["percent_effectuated"])
+        self.assertEqual([x.metric_id for x in passive_metrics()][0], "percent_effectuated")
+        self.assertEqual(list(METRICS)[:2], ["currently_enrolled_people", "percent_effectuated"])
 
     def test_six_without_filter_evidence_are_refused(self):
-        self.assertEqual(set(PROMOTION_CANDIDATES), {"applications_started", "submitted_applications",
-                                                     "total_applicants", "new_enrolled", "active_enrolled",
-                                                     "passive_enrolled"})
+        self.assertEqual(set(PROMOTION_CANDIDATES), {"total_applicants"})
         with tempfile.TemporaryDirectory() as tmp, SnapshotStore(Path(tmp) / "h.sqlite3") as store:
             store.start_run("r1")
             for metric_id, m in PROMOTION_CANDIDATES.items():
@@ -175,7 +179,7 @@ class CandidateExtractionTests(unittest.TestCase):
                 self.assertIsNone(out.control_value)
 
     def test_single_measure_binding_needs_exact_widget_title(self):
-        source = PROMOTION_CANDIDATES["applications_started"].passive_source
+        source = catalog_metric("applications_started").passive_source
         body = widget_payload(source.widget_id, "Applications Started (copy)", measures=["Count of applications"])
         out = extract(promoted("applications_started", body), widget_request(body, [cell(1)]))
         self.assertEqual(out.status, PM_FAILED)

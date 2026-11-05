@@ -49,19 +49,26 @@ class MetricDiscovery:
         return self.widgets[0] if len(self.widgets) == 1 else None
 
 
-def _verified(target: DiscoveryTarget, matched: list[WidgetDiscovery], result: DiscoveryResult) -> MetricDiscovery:
-    controls = [w for w in result.widgets if w.control is not None]
-    control = controls[0].control if controls else None
+def _verified(target: DiscoveryTarget, matched: list[WidgetDiscovery]) -> MetricDiscovery:
+    """Catalog-verified metrics stay VERIFIED and bind to the widget that matched their own label."""
+    key = normalize_label(target.label)
+    if not matched:
+        return MetricDiscovery(target.metric_id, target.label, target.module_id, STATE_VERIFIED, (), (),
+                               "Verified catalog metric; its verified widget was not observed in this run",
+                               "NOT OBSERVED")
+    ids = {w.structure.widget_id for w in matched}
+    widgets = (matched[0],) if len(ids) == 1 else tuple(matched)
+    widget = widgets[0] if len(widgets) == 1 else None
+    control = widget.control if widget is not None else None
     if control is None:
-        reason = "Verified catalog metric; its verified widget was not observed in this run"
+        reason = "Verified catalog metric; exact label match in the dashboard's own requests"
     elif control == CONTROL_PASS:
         reason = "Verified catalog metric; strict control check passed"
     else:
         reason = f"Verified catalog metric; strict control check {control}"
-    widgets = tuple(controls) if controls else tuple(matched)
-    sources = tuple(s for w in widgets for s in w.matches.get(normalize_label(target.label), ()))
+    sources = tuple(s for w in widgets for s in w.matches.get(key, ()))
     return MetricDiscovery(target.metric_id, target.label, target.module_id, STATE_VERIFIED, widgets, sources,
-                           reason, control or "NOT OBSERVED")
+                           reason, control)
 
 
 def resolve_targets(
@@ -72,7 +79,7 @@ def resolve_targets(
         key = normalize_label(target.label)
         matched = [w for w in result.widgets if key in w.matches]
         if catalog_state(target.metric_id) == STATE_VERIFIED:
-            resolved.append(_verified(target, matched, result))
+            resolved.append(_verified(target, matched))
             continue
 
         def pending(reason: str, widgets=tuple(matched)) -> MetricDiscovery:

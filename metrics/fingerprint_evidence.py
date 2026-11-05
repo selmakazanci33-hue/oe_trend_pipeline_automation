@@ -14,11 +14,11 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from metrics.catalog import PROMOTION_CANDIDATES
+from metrics.catalog import PROMOTION_CANDIDATES, MetricDefinition
 from metrics.runtime_validation import BINDING_MEASURE_TITLE, RV_VALUE_EXTRACTED, RuntimeValue
 
 logger = logging.getLogger(__name__)
@@ -209,6 +209,127 @@ class EvidenceOutcome:
     comparison: FingerprintComparison
     observation_recorded: bool
     observation_note: str | None
+
+
+@dataclass(frozen=True)
+class ApprovedSource:
+    """STABLE observation used as the production expected fingerprint. Hash only; no raw definition."""
+
+    metric_id: str
+    widget_id: str
+    bound_measure_title: str
+    fingerprint: str
+
+
+def _appearances(observations: list[dict[str, Any]], metric_id: str) -> list[dict[str, Any]]:
+    found = []
+    for observation in observations:
+        candidate = (observation.get("candidates") or {}).get(metric_id)
+        if isinstance(candidate, dict):
+            found.append(candidate)
+    return found
+
+
+def approval_gap(metric: MetricDefinition, appearances: list[dict[str, Any]]) -> str | None:
+    """Why this metric cannot bind a previously recorded STABLE fingerprint. None when bindable."""
+    source = metric.passive_source
+    if source is None or not source.approved_from_observations:
+        return None
+    if len(appearances) < 2:
+        if not appearances:
+            return "No observation history for this metric"
+        return "Only one observation; STABLE pair not established"
+    now, before = appearances[-1], appearances[-2]
+    fingerprint = now.get("fingerprint")
+    previous = before.get("fingerprint")
+    title = now.get("bound_measure_title")
+    widget_id = now.get("widget_id")
+    if not isinstance(fingerprint, str) or not fingerprint.startswith("sha256:"):
+        return "Latest observation has no approved sha256 fingerprint"
+    if previous != fingerprint:
+        return "Latest two observations are not a STABLE fingerprint pair"
+    if now.get("extraction_status") != RV_VALUE_EXTRACTED or before.get("extraction_status") != RV_VALUE_EXTRACTED:
+        return "STABLE pair is not VALUE_EXTRACTED"
+    if not isinstance(title, str) or not title:
+        return "Latest observation has no bound measure title"
+    titles = now.get("measure_titles") or []
+    if not isinstance(titles, list) or titles.count(title) != 1:
+        return "Bound measure title is not present exactly once"
+    if not isinstance(widget_id, str) or widget_id != source.widget_id:
+        return "Observed widget differs from the production catalog widget"
+    if source.measure_title is not None and source.measure_title != title:
+        return "Observed measure title differs from the production catalog title"
+    return None
+
+
+def approved_sources(log_path: Path | None, metric_ids: tuple[str, ...]) -> dict[str, ApprovedSource]:
+    """Last STABLE pair per metric in the observation log. Missing/changed/absent evidence is omitted (fail closed)."""
+    from metrics.catalog import METRICS
+    if log_path is None:
+        return {}
+    try:
+        observations = load_observations(log_path)
+    except ObservationLogError:
+        return {}
+    approved = {}
+    for metric_id in metric_ids:
+        metric = METRICS.get(metric_id)
+        if metric is None:
+            continue
+        seen = _appearances(observations, metric_id)
+        if approval_gap(metric, seen) is not None:
+            continue
+        now = seen[-1]
+        approved[metric_id] = ApprovedSource(
+            metric_id, now["widget_id"], now["bound_measure_title"], now["fingerprint"])
+    return approved
+
+
+def bind_approved_source(metric: MetricDefinition, approved: ApprovedSource | None) -> MetricDefinition:
+    """Attach the STABLE fingerprint and exact bound title. Unchanged when evidence is missing or mismatched."""
+    source = metric.passive_source
+    if source is None or not source.approved_from_observations or approved is None:
+        return metric
+    if approved.widget_id != source.widget_id:
+        return metric
+    if source.measure_title is not None and source.measure_title != approved.bound_measure_title:
+        return metric
+    return replace(metric, passive_source=replace(
+        source,
+        expected_fingerprint=approved.fingerprint,
+        measure_title=source.measure_title or approved.bound_measure_title,
+    ))
+
+
+def production_passive_metrics(log_path: Path | None) -> list[MetricDefinition]:
+    """Active passive metrics with STABLE fingerprints bound when the observation log has them."""
+    from metrics.catalog import passive_metrics
+    metrics = passive_metrics()
+    needing = [m for m in metrics if m.passive_source is not None and m.passive_source.approved_from_observations]
+    if log_path is None:
+        for metric in needing:
+            logger.warning("Production metric %s not bound: No observation history directory", metric.metric_id)
+        return metrics
+    try:
+        observations = load_observations(log_path)
+    except ObservationLogError as exc:
+        logger.warning("Observation log unusable (%s); production fingerprints not bound", exc)
+        observations = []
+    bound = []
+    for metric in metrics:
+        source = metric.passive_source
+        if source is None or not source.approved_from_observations:
+            bound.append(metric)
+            continue
+        gap = approval_gap(metric, _appearances(observations, metric.metric_id))
+        if gap is not None:
+            logger.warning("Production metric %s not bound: %s", metric.metric_id, gap)
+            bound.append(metric)
+            continue
+        now = _appearances(observations, metric.metric_id)[-1]
+        bound.append(bind_approved_source(metric, ApprovedSource(
+            metric.metric_id, now["widget_id"], now["bound_measure_title"], now["fingerprint"])))
+    return bound
 
 
 def collect_evidence(

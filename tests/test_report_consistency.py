@@ -113,7 +113,8 @@ class ExecutiveReportConsistencyTests(PassiveMetricsHarness):
     def test_pending_roadmap_is_catalog_driven_without_status_notes(self):
         self.full_run()
         chips = self.pending_chips()
-        for name in ("Applications Started", "Submitted Applications", "Total Applicants", "New", "Active",
-                     "Passive", "Cancelled", "Terminated", "Metal Tier"):
+        for name in ("Total Applicants", "Cancelled", "Terminated", "Metal Tier"):
             self.assertIn(name, chips)
+        for name in ("Applications Started", "Submitted Applications", "New", "Active", "Passive"):
+            self.assertNotIn(name, chips)
         self.assertNotIn("roadmap-note", self.report_html())

@@ -138,7 +138,7 @@ def source_check(source: PassiveSource, payload: Mapping[str, Any]) -> str | Non
         return None
     if source.expected_fingerprint is not None:
         if definition_fingerprint(payload) != source.expected_fingerprint:
-            return "Request definition fingerprint mismatch"
+            return "Request definition mismatch"
         return None
     return "No verified source definition"
 
@@ -222,6 +222,9 @@ def _extract(metric: MetricDefinition, observer: SourceWidgetObserver) -> Passiv
     source = metric.passive_source
     if source is None or not source.verifiable:
         return PassiveMetricOutcome(metric.metric_id, PM_FAILED, failure="No verified passive source")
+    if source.approved_from_observations and source.expected_fingerprint is None:
+        return PassiveMetricOutcome(metric.metric_id, PM_FAILED,
+                                    failure="Approved source definition is not available")
     evaluated = []
     for request in observer.candidates(source.widget_id):
         payload = _request_payload(request)

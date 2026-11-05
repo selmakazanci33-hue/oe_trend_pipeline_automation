@@ -16,8 +16,14 @@ from sisense.payloads.currently_enrolled import build_currently_enrolled_query
 
 class CatalogTests(unittest.TestCase):
     def test_only_verified_metrics_are_active(self):
-        self.assertEqual([m.metric_id for m in active_metrics()], ["currently_enrolled_people", "percent_effectuated"])
-        self.assertEqual(list(METRICS), ["currently_enrolled_people", "percent_effectuated"])
+        self.assertEqual([m.metric_id for m in active_metrics()], [
+            "currently_enrolled_people", "percent_effectuated", "applications_started", "submitted_applications",
+            "new_enrolled", "active_enrolled", "passive_enrolled",
+        ])
+        self.assertEqual(list(METRICS), [
+            "currently_enrolled_people", "percent_effectuated", "applications_started", "submitted_applications",
+            "new_enrolled", "active_enrolled", "passive_enrolled",
+        ])
 
     def test_metadata(self):
         m = get_metric("currently_enrolled_people")
@@ -46,7 +52,7 @@ class CatalogTests(unittest.TestCase):
             "Operations", "DMI & Notices", "Contact Center", "Agent / Broker",
         ])
         active = {m.module_id for m in MODULES if m.status == STATUS_ACTIVE}
-        self.assertEqual(active, {"overview", "enrollment"})
+        self.assertEqual(active, {"overview", "enrollment", "applications"})
         module_ids = {m.module_id for m in MODULES}
         self.assertTrue(all(item.module_id in module_ids for item in ROADMAP))
 
@@ -59,7 +65,7 @@ class CatalogTests(unittest.TestCase):
 
     def test_unknown_metric(self):
         with self.assertRaises(KeyError):
-            get_metric("applications_started")
+            get_metric("total_applicants")
 
 
 if __name__ == "__main__":

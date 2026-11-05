@@ -57,7 +57,7 @@ from metrics.catalog import (
     passive_metrics,
 )
 from metrics.discovery import resolve_targets
-from metrics.fingerprint_evidence import OBSERVATIONS_FILE, collect_evidence
+from metrics.fingerprint_evidence import OBSERVATIONS_FILE, collect_evidence, production_passive_metrics
 from metrics.passive_metrics import (
     MAX_CANDIDATES_PER_WIDGET,
     PassiveMetricOutcome,
@@ -205,11 +205,14 @@ def main() -> int:
             logger.error("Snapshot history unavailable (%s); Sisense was not contacted", type(exc).__name__)
             return EXIT_FAILURE
 
+    production_passive = production_passive_metrics(
+        None if settings.history_db_path is None else settings.history_db_path.parent / OBSERVATIONS_FILE
+    )
     passive_observer = create_passive_observer(settings, query)
     passive_observation = None
     discovery_observer = create_discovery_observer(settings, query)
     discovery_outcome = None
-    source_observer = create_source_observer(settings)
+    source_observer = create_source_observer(settings, production_passive)
     passive_outcomes: tuple[PassiveMetricOutcome, ...] = ()
     passive_retrieved_at = None
     try:
@@ -233,19 +236,21 @@ def main() -> int:
                 if passive_observer is not None:
                     passive_observation = run_passive_observation(session, passive_observer, settings.timeouts.slow)
                 if source_observer is not None:
-                    passive_outcomes = read_passive_metrics(session, source_observer, settings.timeouts.slow)
+                    passive_outcomes = read_passive_metrics(
+                        session, source_observer, settings.timeouts.slow, production_passive
+                    )
                     passive_retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 value = retrieve_value(session, settings, query, request_metadata)
             finally:
                 session.close()
     except MissingVerifiedInformation as exc:
         logger.error("STOP: %s", exc)
-        report_failure(reporting, run_id, exc)
+        report_failure(reporting, run_id, exc, production_passive)
         finish_runtime_validation(discovery_outcome, settings, None)
         return EXIT_MISSING_VERIFIED_INFO
     except (SisenseError, PlaywrightError) as exc:
         logger.error("Retrieval failed: %s: %s", type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "")
-        report_failure(reporting, run_id, exc)
+        report_failure(reporting, run_id, exc, production_passive)
         finish_runtime_validation(discovery_outcome, settings, None)
         return EXIT_FAILURE
 
@@ -273,7 +278,7 @@ def main() -> int:
         print_discovery_summary(discovery_outcome)
     finish_runtime_validation(discovery_outcome, settings, result.value)
 
-    passive_values = passive_run_values(passive_outcomes, result, passive_retrieved_at)
+    passive_values = passive_run_values(passive_outcomes, result, passive_retrieved_at, production_passive)
     if reporting is None:
         print_passive_metrics(passive_values, None)
         return EXIT_OK
@@ -287,16 +292,15 @@ def main() -> int:
     return EXIT_OK
 
 
-def create_source_observer(settings: Settings) -> SourceWidgetObserver | None:
+def create_source_observer(settings: Settings, metrics) -> SourceWidgetObserver | None:
     """Production passive sources: always on for normal runs; never in diagnostics mode."""
-    metrics = passive_metrics()
     if settings.diagnostics_only or not metrics:
         return None
-    return SourceWidgetObserver(m.passive_source.widget_id for m in metrics)
+    return SourceWidgetObserver(m.passive_source.widget_id for m in metrics if m.passive_source)
 
 
 def read_passive_metrics(
-    session: AuthenticatedSession, observer: SourceWidgetObserver, timeout: int
+    session: AuthenticatedSession, observer: SourceWidgetObserver, timeout: int, metrics
 ) -> tuple[PassiveMetricOutcome, ...]:
     """Read verified passive metrics from already-returned responses; never raises, never sends a request."""
     try:
@@ -314,19 +318,20 @@ def read_passive_metrics(
     except Exception as exc:
         logger.error("Passive source wait failed: %s", type(exc).__name__)
     observer.stop()
-    outcomes = tuple(extract_passive_metric(m, observer) for m in passive_metrics())
+    outcomes = tuple(extract_passive_metric(m, observer) for m in metrics)
     logger.info("Passive production metrics: %s",
                 ", ".join(f"{o.metric_id} {o.status}" for o in outcomes))
     return outcomes
 
 
 def passive_run_values(
-    outcomes: tuple[PassiveMetricOutcome, ...], result: MetricResult, retrieved_at: str | None
+    outcomes: tuple[PassiveMetricOutcome, ...], result: MetricResult, retrieved_at: str | None,
+    metrics,
 ) -> tuple[PassiveRunValue, ...]:
     """Only values that passed every check and the Currently Enrolled canary become results."""
     values = []
     by_id = {o.metric_id: o for o in outcomes}
-    for metric in passive_metrics():
+    for metric in metrics:
         outcome = by_id.get(metric.metric_id)
         if outcome is None:
             values.append(PassiveRunValue(metric, None, "Passive source not read in this run"))
@@ -578,12 +583,13 @@ def create_reporting(settings: Settings) -> ReportingPipeline | None:
     )
 
 
-def report_failure(reporting: ReportingPipeline | None, run_id: str, exc: BaseException) -> None:
+def report_failure(reporting: ReportingPipeline | None, run_id: str, exc: BaseException,
+                   metrics=()) -> None:
     """Record the failed run (no snapshot) and regenerate the report from stored history."""
     if reporting is None:
         return
     try:
-        summary = reporting.complete_failure(run_id, type(exc).__name__, passive_metrics())
+        summary = reporting.complete_failure(run_id, type(exc).__name__, metrics or passive_metrics())
     except Exception as report_exc:
         logger.error("Could not update the report after failure: %s", type(report_exc).__name__)
         return
