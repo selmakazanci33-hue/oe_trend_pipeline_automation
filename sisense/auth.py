@@ -16,6 +16,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from config.settings import MissingVerifiedInformation, Settings
+from sisense.browser import launch_browser
 from sisense.models import AuthenticationError
 from sisense.retry import RetryPolicy, run_with_retry
 
@@ -56,7 +57,7 @@ class SisenseAuthenticator:
 
     def open_session(self) -> AuthenticatedSession:
         """Return a browser context that is verified to be on the target dashboard."""
-        browser = self._playwright.chromium.launch(headless=self._settings.headless)
+        browser = launch_browser(self._playwright, self._settings.browser_channel, self._settings.headless)
         page: Page | None = None
         try:
             state_path = self._settings.storage_state_path

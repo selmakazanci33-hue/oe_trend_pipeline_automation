@@ -36,6 +36,10 @@ class ResponseValidationError(SisenseError):
     """The JAQL response did not have the expected structure or value."""
 
 
+class BrowserNotAvailableError(SisenseError):
+    """The configured installed browser channel could not be launched."""
+
+
 class VerifiedJaqlPayloadRequired(SisenseError):
     """The verified JAQL payload for a metric has not been supplied."""
 

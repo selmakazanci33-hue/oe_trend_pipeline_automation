@@ -37,6 +37,10 @@ MANUAL_BASELINE_CURRENTLY_ENROLLED = 791826
 
 VERIFIED_PASSWORD_SELECTOR = "#password"
 
+# Installed-browser channels only; Playwright-managed Chromium is intentionally unsupported.
+SUPPORTED_BROWSER_CHANNELS = frozenset({"msedge", "chrome"})
+DEFAULT_BROWSER_CHANNEL = "msedge"
+
 
 class ConfigurationError(Exception):
     """Configuration is present but invalid."""
@@ -95,6 +99,7 @@ class Settings:
     storage_state_path: Path
     artifacts_dir: Path
     manual_baseline: int = MANUAL_BASELINE_CURRENTLY_ENROLLED
+    browser_channel: str = DEFAULT_BROWSER_CHANNEL
 
     @property
     def jaql_url(self) -> str:
@@ -222,6 +227,13 @@ def load_settings(env_file: Path | None = None) -> Settings:
         submit=_env_str("SISENSE_LOGIN_SUBMIT_SELECTOR"),
     )
 
+    browser_channel = _env_str("PLAYWRIGHT_BROWSER_CHANNEL", DEFAULT_BROWSER_CHANNEL).lower()
+    if browser_channel not in SUPPORTED_BROWSER_CHANNELS:
+        raise ConfigurationError(
+            f"PLAYWRIGHT_BROWSER_CHANNEL must be one of {sorted(SUPPORTED_BROWSER_CHANNELS)}, "
+            f"got {browser_channel!r}"
+        )
+
     return Settings(
         base_url=base_url,
         email=email,
@@ -234,4 +246,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         login_selectors=login_selectors,
         storage_state_path=PROJECT_ROOT / "runtime" / "auth" / "sisense_state.json",
         artifacts_dir=PROJECT_ROOT / "runtime" / "artifacts",
+        browser_channel=browser_channel,
     )
