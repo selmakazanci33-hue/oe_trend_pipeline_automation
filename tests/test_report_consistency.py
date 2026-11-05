@@ -101,9 +101,14 @@ class ExecutiveReportConsistencyTests(PassiveMetricsHarness):
 
     def test_ce_only_sections_name_their_metric(self):
         self.full_run()
-        text = visible(self.report_html())
+        html = self.report_html()
+        text = visible(html)
         self.assertIn("Currently Enrolled People — derived from actual snapshot history only", text)
         self.assertIn("Currently Enrolled People — built only from stored validated snapshots", text)
+        self.assertIn("Currently Enrolled — History &amp; Trends", html)
+        self.assertNotIn("Enrollment Movement", html)
+        self.assertNotIn("Additional Enrollment Metrics", html)
+        self.assertNotIn("Source &amp; Derived Values", html)
 
     def test_pending_roadmap_is_catalog_driven_without_status_notes(self):
         self.full_run()

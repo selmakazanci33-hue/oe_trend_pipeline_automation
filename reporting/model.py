@@ -1,4 +1,4 @@
-"""Executive reporting model: business values only, with explicit SOURCE/DERIVED labels.
+"""Executive reporting model: business values only, with explicit SOURCE/DERIVED/SNAPSHOT labels.
 
 Status rules:
 - LIVE: this run retrieved and validated a live value.

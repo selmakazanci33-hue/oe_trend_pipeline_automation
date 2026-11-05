@@ -15,8 +15,16 @@ from pathlib import Path
 
 from plotly.offline import get_plotlyjs
 
-from analytics.derived import DERIVED, SOURCE, Comparison, DerivedValue
-from metrics.catalog import PENDING_MESSAGE, STATUS_ACTIVE, roadmap_for
+from analytics.derived import DERIVED, SNAPSHOT, SOURCE, Comparison, DerivedValue
+from metrics.catalog import (
+    PENDING_MESSAGE,
+    SECTION_CURRENT_ENROLLMENT,
+    SECTION_ENROLLMENT_METRICS,
+    STATUS_ACTIVE,
+    MetricDefinition,
+    report_sections,
+    roadmap_for,
+)
 from reporting.formatting import (
     ARROWS,
     direction,
@@ -45,6 +53,7 @@ BADGE_CLASSES = {
     "DUPLICATE_RUN": "badge-stale",
     SOURCE: "badge-source",
     DERIVED: "badge-derived",
+    SNAPSHOT: "badge-snapshot",
 }
 
 
@@ -172,17 +181,19 @@ def _kpi_section(model: ReportModel) -> str:
             f'<div class="kpi-note">{escape(note)}</div>{trend}</section>')
 
 
-def _trend_section(model: ReportModel) -> str:
-    return ('<section class="card"><div class="section-head"><h2>Enrollment Trend</h2>'
+def _trend_section(model: ReportModel, chart_id: str = "trend-chart-overview") -> str:
+    empty_id = f"{chart_id}-empty"
+    return ('<section class="card" data-section="enrollment_trend"><div class="section-head"><h2>Enrollment Trend</h2>'
             f'<span class="section-sub">{escape(model.metric.display_name)} — built only from stored validated '
             'snapshots</span></div>'
-            '<div id="trend-chart" class="chart"></div><div id="trend-empty" class="empty" hidden>'
+            f'<div id="{escape(chart_id)}" class="chart"></div><div id="{escape(empty_id)}" class="empty" hidden>'
             'No snapshot history yet. The trend appears after the first successful retrieval.</div></section>')
 
 
 def _movement_section(model: ReportModel) -> str:
     cards = "".join(_comparison_card(c) for c in model.analytics.comparisons)
-    return (f'<section><div class="section-head"><h2>Enrollment Movement</h2>'
+    return (f'<section data-section="currently_enrolled_recent_change"><div class="section-head">'
+            f'<h2>Currently Enrolled — Recent Change</h2>'
             f'<span class="section-sub">{escape(model.metric.display_name)} — derived from actual snapshot history '
             f'only</span></div>'
             f'<div class="grid grid-4">{cards}</div></section>')
@@ -190,16 +201,25 @@ def _movement_section(model: ReportModel) -> str:
 
 def _stats_rows(model: ReportModel) -> str:
     a = model.analytics
-    rows = []
+    rows: list[tuple[str, str, str]] = []
     if a.latest is not None:
         rows.append((model.metric.display_name, fmt_int(a.latest.value), SOURCE))
-    derived: list[DerivedValue] = [a.historical_min, a.historical_max, a.average_daily_change, a.latest_snapshot_time]
-    rows += [(d.label, fmt_derived(d), DERIVED) for d in derived]
+    stats: list[DerivedValue] = [a.historical_min, a.historical_max, a.average_daily_change, a.latest_snapshot_time]
+    rows += [(d.label, fmt_derived(d), d.kind) for d in stats]
     rows += [(c.label, fmt_comparison(c), DERIVED) for c in a.comparisons]
     return "".join(
         f"<tr><td>{escape(label)}</td><td class=\"num\">{escape(value)}</td><td>{_badge(kind)}</td></tr>"
         for label, value, kind in rows
     )
+
+
+def _history_section(model: ReportModel) -> str:
+    return (f'<section class="card" data-section="currently_enrolled_history"><div class="section-head">'
+            f'<h2>Currently Enrolled — History &amp; Trends</h2>'
+            f'<span class="section-sub">{escape(model.metric.display_name)} — calculated from stored snapshot history'
+            f'</span></div>'
+            f'<table class="stats"><thead><tr><th>Measure</th><th class="num">Value</th><th>Type</th></tr></thead>'
+            f'<tbody>{_stats_rows(model)}</tbody></table></section>')
 
 
 def _quality_section(model: ReportModel) -> str:
@@ -286,11 +306,12 @@ def _panel_snapshot(panel: MetricPanel) -> str:
             f'<span class="muted">({panel.analytics.stored_snapshot_count} stored)</span></div>')
 
 
-def _panels_section(panels, title: str) -> str:
+def _panels_section(panels, title: str, section_id: str | None = None) -> str:
     if not panels:
         return ""
     cards = "".join(_panel_card(p) for p in panels)
-    return (f'<section><div class="section-head"><h2>{escape(title)}</h2>'
+    attr = f' data-section="{escape(section_id)}"' if section_id else ""
+    return (f'<section{attr}><div class="section-head"><h2>{escape(title)}</h2>'
             f'<span class="section-sub">Each metric carries its own status, timestamp and snapshot history</span></div>'
             f'<div class="grid grid-4">{cards}</div></section>')
 
@@ -298,6 +319,65 @@ def _panels_section(panels, title: str) -> str:
 def _pending_items(model: ReportModel, module_id: str):
     verified = {p.metric.display_name for p in model.panels} | {model.metric.display_name}
     return [i for i in roadmap_for(module_id) if i.name not in verified]
+
+
+def _panels_in(model: ReportModel, section_id: str) -> tuple[MetricPanel, ...]:
+    return tuple(
+        p for p in model.panels_for("enrollment")
+        if (p.metric.section_id or SECTION_ENROLLMENT_METRICS) == section_id
+    )
+
+
+def _definition_fields(metric: MetricDefinition) -> list[tuple[str, str]]:
+    fields = [
+        ("Metric", f"{escape(metric.display_name)} {_badge(SOURCE)}"),
+        ("Category", escape(metric.category) if metric.category else ""),
+        ("Unit", escape(metric.unit) if metric.unit else ""),
+        ("Source", escape(metric.source) if metric.source else ""),
+        ("Description", escape(metric.description) if metric.description else ""),
+    ]
+    return [(label, value) for label, value in fields if value]
+
+
+def _definition_block(metric: MetricDefinition) -> str:
+    body = "".join(f"<tr><th>{label}</th><td>{value}</td></tr>" for label, value in _definition_fields(metric))
+    return (f'<article class="definition" data-definition="{escape(metric.metric_id)}">'
+            f"<h3>{escape(metric.display_name)}</h3><table class=\"kv\">{body}</table></article>")
+
+
+def _production_enrollment_metrics(model: ReportModel) -> tuple[MetricDefinition, ...]:
+    ordered: list[MetricDefinition] = []
+    if model.metric.module_id == "enrollment":
+        ordered.append(model.metric)
+    seen = {m.metric_id for m in ordered}
+    for panel in model.panels_for("enrollment"):
+        if panel.metric.metric_id not in seen:
+            ordered.append(panel.metric)
+            seen.add(panel.metric.metric_id)
+    return tuple(ordered)
+
+
+def _definitions_section(model: ReportModel) -> str:
+    metrics = _production_enrollment_metrics(model)
+    if not metrics:
+        return ""
+    blocks = "".join(_definition_block(metric) for metric in metrics)
+    return (f'<section class="card" data-section="metric_definitions"><div class="section-head">'
+            f"<h2>Metric Definitions</h2></div>"
+            f'<div class="definitions">{blocks}</div></section>')
+
+
+def _grouped_section(model: ReportModel, section) -> str:
+    panels = _panels_in(model, section.section_id)
+    pending = [item for item in _pending_items(model, section.module_id) if item.section_id == section.section_id]
+    if not panels and not pending:
+        return ""
+    sub = f'<span class="section-sub">{escape(section.subtitle)}</span>' if section.subtitle else ""
+    cards = f'<div class="grid grid-4">{"".join(_panel_card(p) for p in panels)}</div>' if panels else ""
+    chips = f'<ul class="roadmap compact">{_roadmap_chips(pending)}</ul>' if pending else ""
+    kind = "pending-group" if not panels else "production-group"
+    return (f'<section class="{kind}" data-section="{escape(section.section_id)}">'
+            f'<div class="section-head"><h2>{escape(section.heading)}</h2>{sub}</div>{cards}{chips}</section>')
 
 
 def _module_view(model: ReportModel, module_id: str, title: str) -> str:
@@ -312,22 +392,20 @@ def _module_view(model: ReportModel, module_id: str, title: str) -> str:
 
 
 def _enrollment_view(model: ReportModel) -> str:
-    metric = model.metric
-    chips = _roadmap_chips(_pending_items(model, "enrollment"))
+    grouped = "".join(
+        _grouped_section(model, section)
+        for section in report_sections("enrollment")
+        if section.section_id not in (SECTION_CURRENT_ENROLLMENT, SECTION_ENROLLMENT_METRICS)
+    )
     return (
-        _kpi_section(model)
-        + _panels_section(model.panels_for("enrollment"), "Enrollment Metrics")
-        + f'<section class="card"><div class="section-head"><h2>Metric Definition</h2></div><table class="kv">'
-          f'<tr><th>Metric</th><td>{escape(metric.display_name)} {_badge(SOURCE)}</td></tr>'
-          f'<tr><th>Category</th><td>{escape(metric.category)}</td></tr>'
-          f'<tr><th>Unit</th><td>{escape(metric.unit)}</td></tr>'
-          f'<tr><th>Source</th><td>{escape(metric.source)}</td></tr>'
-          f'<tr><th>Description</th><td>{escape(metric.description)}</td></tr></table></section>'
-        + f'<section class="card"><div class="section-head"><h2>Source &amp; Derived Values</h2></div>'
-          f'<table class="stats"><thead><tr><th>Measure</th><th class="num">Value</th><th>Type</th></tr></thead>'
-          f'<tbody>{_stats_rows(model)}</tbody></table></section>'
-        + f'<section class="card pending"><h2>Additional Enrollment Metrics</h2>'
-          f'<p class="muted">{escape(PENDING_MESSAGE)}</p><ul class="roadmap">{chips}</ul></section>'
+        f'<section data-section="{SECTION_CURRENT_ENROLLMENT}"><div class="section-head">'
+        f"<h2>Current Enrollment</h2></div>{_kpi_section(model)}</section>"
+        + _panels_section(_panels_in(model, SECTION_ENROLLMENT_METRICS), "Enrollment Metrics",
+                          SECTION_ENROLLMENT_METRICS)
+        + grouped
+        + _history_section(model)
+        + _trend_section(model, "trend-chart-enrollment")
+        + _definitions_section(model)
     )
 
 
@@ -341,7 +419,8 @@ def render_html(model: ReportModel) -> str:
                    f'data-view="{escape(module.module_id)}">{escape(module.title)}{tag}</button>')
         if module.module_id == "overview":
             content = (_kpi_section(model) + _panels_section(model.panels, "Key Metrics")
-                       + _movement_section(model) + _trend_section(model) + _quality_section(model))
+                       + _movement_section(model) + _trend_section(model, "trend-chart-overview")
+                       + _quality_section(model))
         elif module.module_id == "enrollment":
             content = _enrollment_view(model)
         else:
@@ -384,28 +463,33 @@ def render_html(model: ReportModel) -> str:
   <main>
     {_banner(model)}
     {"".join(views)}
-    <footer>Generated {escape(fmt_time(model.generated_at))} · {_badge(SOURCE)} values come from validated Sisense
-    retrievals · {_badge(DERIVED)} values are calculated from stored snapshot history.</footer>
+    <footer>Generated {escape(fmt_time(model.generated_at))} · {_badge(SOURCE)} — values come from validated Sisense retrievals · {_badge(DERIVED)} — values are calculated from stored production snapshot history · {_badge(SNAPSHOT)} — metadata associated with a stored validated observation.</footer>
   </main>
 </div>
 <script>
 (function () {{
   var figure = {figure};
-  var chart = document.getElementById("trend-chart");
-  if (figure.data.length) {{
-    Plotly.newPlot(chart, figure.data, figure.layout,
-      {{responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"]}});
-  }} else {{
-    chart.hidden = true;
-    document.getElementById("trend-empty").hidden = false;
-  }}
+  var chartIds = ["trend-chart-overview", "trend-chart-enrollment"];
+  var plotOpts = {{responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"]}};
+  chartIds.forEach(function (id) {{
+    var chart = document.getElementById(id);
+    if (!chart) return;
+    if (figure.data.length) {{
+      Plotly.newPlot(chart, figure.data, figure.layout, plotOpts);
+    }} else {{
+      chart.hidden = true;
+      var empty = document.getElementById(id + "-empty");
+      if (empty) empty.hidden = false;
+    }}
+  }});
   document.querySelectorAll(".nav-item").forEach(function (btn) {{
     btn.addEventListener("click", function () {{
       document.querySelectorAll(".nav-item").forEach(function (b) {{ b.classList.remove("is-active"); }});
       btn.classList.add("is-active");
       document.querySelectorAll(".view").forEach(function (v) {{ v.hidden = true; }});
       document.getElementById("view-" + btn.dataset.view).hidden = false;
-      if (btn.dataset.view === "overview" && figure.data.length) {{ Plotly.Plots.resize(chart); }}
+      var visibleChart = document.getElementById("trend-chart-" + btn.dataset.view);
+      if (visibleChart && figure.data.length) {{ Plotly.Plots.resize(visibleChart); }}
     }});
   }});
 }})();
@@ -463,6 +547,12 @@ font-weight:700;font-size:17px;align-items:baseline}.kpi-trend-basis{font-weight
 .up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--muted)}.muted{color:var(--muted);font-weight:400}
 .section-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .section-head h2,.pending h2{margin:0;font-size:17px;color:var(--navy)}.section-sub{font-size:13px;color:var(--muted)}
+.pending{padding:14px 16px}.pending .muted{margin:6px 0 0;font-size:13px}
+.pending-group{padding:2px 0}.pending-group .section-head{margin-bottom:6px}
+.pending-group h2{font-size:15px;font-weight:600;color:var(--muted)}
+.roadmap.compact{margin:0;gap:6px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+.roadmap.compact li{padding:6px 10px;font-size:13px}
+.definitions{display:grid;gap:16px}.definition h3{margin:0 0 8px;font-size:15px;color:var(--navy)}
 .grid{display:grid;gap:16px}.grid-4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
 .move-value{font-size:24px;font-weight:700;margin-top:10px;font-variant-numeric:tabular-nums}
 .move-value.muted{font-size:16px}.move-pct{font-size:15px;margin-left:6px}
@@ -477,7 +567,7 @@ table{width:100%;border-collapse:collapse}.kv th{text-align:left;width:38%;color
 .badge-live{background:#dcfce7;color:#166534}.badge-pass{background:#dbeafe;color:#1e40af}
 .badge-stale{background:#fef3c7;color:#92400e}.badge-error{background:#fee2e2;color:#991b1b}
 .badge-none{background:#e5e7eb;color:#374151}.badge-source{background:#e0f2f1;color:#0f766e}
-.badge-derived{background:#ede9fe;color:#5b21b6}
+.badge-derived{background:#ede9fe;color:#5b21b6}.badge-snapshot{background:#e8eef5;color:#1e3a5f}
 .banner{padding:12px 16px;border-radius:10px}.banner-stale{background:#fff7e6;border:1px solid #f6d48a}
 .banner-error{background:#fdecec;border:1px solid #f5b5b5}.banner-partial{background:#fff7e6;border:1px solid #f6d48a}
 .roadmap{list-style:none;padding:0;margin:14px 0 0;display:grid;gap:8px;

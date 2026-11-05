@@ -1,9 +1,11 @@
 """Derived analytics computed only from actual observed values.
 
 SOURCE values come from validated Sisense retrievals (stored snapshots, plus
-the current run's live value). DERIVED values are calculated from them. When
-history is insufficient a DerivedValue carries ``value=None`` and a reason; it
-is never zero-filled and never substituted with a manual baseline.
+the current run's live value). DERIVED values are calculated from them.
+SNAPSHOT is stored observation metadata (for example the latest snapshot
+timestamp), not a calculated business value. When history is insufficient a
+DerivedValue carries ``value=None`` and a reason; it is never zero-filled and
+never substituted with a manual baseline.
 
 Window comparisons (daily / 7-day / 30-day) use the most recent earlier point
 taken at or before ``latest - window`` and no older than ``latest - window -
@@ -20,6 +22,7 @@ from history.store import Snapshot
 
 SOURCE = "SOURCE"
 DERIVED = "DERIVED"
+SNAPSHOT = "SNAPSHOT"
 INSUFFICIENT_HISTORY = "Insufficient history"
 
 
@@ -105,8 +108,8 @@ def points_from_snapshots(snapshots: Iterable[Snapshot]) -> list[DataPoint]:
     )
 
 
-def _unavailable(key: str, label: str, unit: str, reason: str) -> DerivedValue:
-    return DerivedValue(key, label, None, unit, reason=reason)
+def _unavailable(key: str, label: str, unit: str, reason: str, kind: str = DERIVED) -> DerivedValue:
+    return DerivedValue(key, label, None, unit, reason=reason, kind=kind)
 
 
 def _comparison(
@@ -147,8 +150,9 @@ def compute_analytics(metric_id: str, snapshots: Iterable[Snapshot], current: Da
     latest = current if current is not None else (stored[-1] if stored else None)
     latest_snapshot_time = (
         DerivedValue("latest_snapshot_time", "Latest Snapshot Time", stored[-1].observed_at, "timestamp",
-                     reference=stored[-1])
-        if stored else _unavailable("latest_snapshot_time", "Latest Snapshot Time", "timestamp", "No snapshots")
+                     reference=stored[-1], kind=SNAPSHOT)
+        if stored else _unavailable("latest_snapshot_time", "Latest Snapshot Time", "timestamp", "No snapshots",
+                                    SNAPSHOT)
     )
 
     if latest is None:

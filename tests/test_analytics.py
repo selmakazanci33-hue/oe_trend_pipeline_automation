@@ -1,7 +1,7 @@
 import unittest
 from datetime import timedelta
 
-from analytics.derived import DERIVED, INSUFFICIENT_HISTORY, SOURCE, DataPoint, compute_analytics
+from analytics.derived import DERIVED, INSUFFICIENT_HISTORY, SNAPSHOT, SOURCE, DataPoint, compute_analytics
 from tests.reporting_fixtures import METRIC_ID, T0, series, snapshot
 
 
@@ -18,6 +18,7 @@ class EmptyAndSingleTests(unittest.TestCase):
             self.assertFalse(c.available)
             self.assertIsNone(c.change.value)
         self.assertFalse(a.latest_snapshot_time.available)
+        self.assertEqual(a.latest_snapshot_time.kind, SNAPSHOT)
 
     def test_single_snapshot(self):
         a = analytics(series((0, 812_000)))
@@ -30,6 +31,8 @@ class EmptyAndSingleTests(unittest.TestCase):
         self.assertFalse(a.historical_max.available)
         self.assertFalse(a.average_daily_change.available)
         self.assertEqual(a.latest_snapshot_time.value, T0)
+        self.assertEqual(a.latest_snapshot_time.kind, SNAPSHOT)
+        self.assertEqual(a.historical_min.kind, DERIVED)
 
 
 class ComparisonTests(unittest.TestCase):

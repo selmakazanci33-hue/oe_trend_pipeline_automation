@@ -84,7 +84,8 @@ class HtmlTests(unittest.TestCase):
         for text in (
             "Georgia Access", "OE Executive Intelligence", "Plan Year 2027", "Last Successful Refresh",
             "Data Source", "Pipeline Status", "CURRENTLY ENROLLED PEOPLE", "806,000", "Enrollment Trend",
-            "Enrollment Movement", "Previous Snapshot Change", "Daily Change", "7-Day Change", "30-Day Change",
+            "Currently Enrolled — Recent Change", "Previous Snapshot Change", "Daily Change", "7-Day Change",
+            "30-Day Change",
             "Data Freshness &amp; Quality", "Historical Snapshot Count", "PY 2027 - OE Executive Dashboard",
             "Executive Overview", "Applications", "Issuers", "EDE", "Financial Assistance", "Operations",
             "DMI &amp; Notices", "Contact Center", "Agent / Broker", PENDING_MESSAGE,

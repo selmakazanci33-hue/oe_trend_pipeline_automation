@@ -61,6 +61,7 @@ class MetricDefinition:
     module_id: str
     query_builder: Callable[[], JaqlQuery] | None = None
     passive_source: PassiveSource | None = None
+    section_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.status == STATUS_ACTIVE:
@@ -86,6 +87,36 @@ class RoadmapItem:
     name: str
     module_id: str
     status: str = STATUS_PENDING
+    section_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReportSection:
+    """Business grouping inside a module. Pending chips and future production values share a location."""
+
+    section_id: str
+    heading: str
+    module_id: str = "enrollment"
+    subtitle: str | None = None
+
+
+SECTION_CURRENT_ENROLLMENT = "current_enrollment"
+SECTION_ENROLLMENT_METRICS = "enrollment_metrics"
+SECTION_ENROLLMENT_STATUS = "enrollment_status"
+SECTION_ENROLLMENT_STATUS_CHANGES = "enrollment_status_changes"
+SECTION_PLAN_DISTRIBUTION = "plan_distribution"
+
+REPORT_SECTIONS: tuple[ReportSection, ...] = (
+    ReportSection(SECTION_CURRENT_ENROLLMENT, "Current Enrollment"),
+    ReportSection(SECTION_ENROLLMENT_METRICS, "Enrollment Metrics"),
+    ReportSection(SECTION_ENROLLMENT_STATUS, "Enrollment Status"),
+    ReportSection(
+        SECTION_ENROLLMENT_STATUS_CHANGES,
+        "Enrollment Status Changes",
+        subtitle="Cancelled and Terminated — not the historical change in Currently Enrolled",
+    ),
+    ReportSection(SECTION_PLAN_DISTRIBUTION, "Plan Distribution"),
+)
 
 
 CURRENTLY_ENROLLED = MetricDefinition(
@@ -103,6 +134,7 @@ CURRENTLY_ENROLLED = MetricDefinition(
     status=STATUS_ACTIVE,
     module_id="enrollment",
     query_builder=build_currently_enrolled_query,
+    section_id=SECTION_CURRENT_ENROLLMENT,
 )
 
 # Second measure of the verified Currently Enrolled widget. The widget's whole
@@ -129,13 +161,14 @@ PERCENT_EFFECTUATED = MetricDefinition(
         measure_title="% Effectuated",
         expected_definition=build_currently_enrolled_query,
     ),
+    section_id=SECTION_ENROLLMENT_METRICS,
 )
 
 METRICS: dict[str, MetricDefinition] = {m.metric_id: m for m in (CURRENTLY_ENROLLED, PERCENT_EFFECTUATED)}
 
 
 def _candidate(metric_id: str, name: str, module_id: str, widget_id: str, widget_title: str,
-               measure_title: str | None) -> MetricDefinition:
+               measure_title: str | None, section_id: str | None = None) -> MetricDefinition:
     return MetricDefinition(
         metric_id=metric_id,
         display_name=name,
@@ -150,6 +183,7 @@ def _candidate(metric_id: str, name: str, module_id: str, widget_id: str, widget
         status=STATUS_VALIDATION_ONLY,
         module_id=module_id,
         passive_source=PassiveSource(widget_id, widget_title, measure_title),
+        section_id=section_id,
     )
 
 
@@ -167,11 +201,14 @@ PROMOTION_CANDIDATES: dict[str, MetricDefinition] = {m.metric_id: m for m in (
     _candidate("total_applicants", "Total Applicants", "applications",
                "6a98048ccef60720fe7f9b4f", "Applicants On Submitted Applications", "Total Applicants"),
     _candidate("new_enrolled", "New", "enrollment",
-               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "NEW"),
+               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "NEW",
+               SECTION_ENROLLMENT_STATUS),
     _candidate("active_enrolled", "Active", "enrollment",
-               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "ACTIVE"),
+               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "ACTIVE",
+               SECTION_ENROLLMENT_STATUS),
     _candidate("passive_enrolled", "Passive", "enrollment",
-               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "PASSIVE"),
+               "6a98048ccef60720fe7f9b6e", "New/Active/Passive - Enrolled People", "PASSIVE",
+               SECTION_ENROLLMENT_STATUS),
 )}
 
 MODULES: tuple[Module, ...] = (
@@ -192,12 +229,12 @@ ROADMAP: tuple[RoadmapItem, ...] = (
     RoadmapItem("Applications Started", "applications"),
     RoadmapItem("Submitted Applications", "applications"),
     RoadmapItem("Total Applicants", "applications"),
-    RoadmapItem("New", "enrollment"),
-    RoadmapItem("Active", "enrollment"),
-    RoadmapItem("Passive", "enrollment"),
-    RoadmapItem("Cancelled", "enrollment"),
-    RoadmapItem("Terminated", "enrollment"),
-    RoadmapItem("Metal Tier", "enrollment"),
+    RoadmapItem("New", "enrollment", section_id=SECTION_ENROLLMENT_STATUS),
+    RoadmapItem("Active", "enrollment", section_id=SECTION_ENROLLMENT_STATUS),
+    RoadmapItem("Passive", "enrollment", section_id=SECTION_ENROLLMENT_STATUS),
+    RoadmapItem("Cancelled", "enrollment", section_id=SECTION_ENROLLMENT_STATUS_CHANGES),
+    RoadmapItem("Terminated", "enrollment", section_id=SECTION_ENROLLMENT_STATUS_CHANGES),
+    RoadmapItem("Metal Tier", "enrollment", section_id=SECTION_PLAN_DISTRIBUTION),
     RoadmapItem("FPL Level", "financial_assistance"),
     RoadmapItem("Financial Assistance", "financial_assistance"),
     RoadmapItem("Net Premium", "financial_assistance"),
@@ -295,3 +332,7 @@ def passive_metrics() -> list[MetricDefinition]:
 
 def roadmap_for(module_id: str) -> list[RoadmapItem]:
     return [item for item in ROADMAP if item.module_id == module_id]
+
+
+def report_sections(module_id: str) -> tuple[ReportSection, ...]:
+    return tuple(section for section in REPORT_SECTIONS if section.module_id == module_id)
