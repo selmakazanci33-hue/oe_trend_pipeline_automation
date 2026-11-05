@@ -72,6 +72,7 @@ class BrowserJaqlObserver:
 
     def __init__(self, url: str = VERIFIED_JAQL_URL):
         self._url = url
+        self._context: BrowserContext | None = None
         self.request_count = 0
         self._finished: list[Request] = []
 
@@ -79,9 +80,25 @@ class BrowserJaqlObserver:
     def finished_count(self) -> int:
         return len(self._finished)
 
+    def finished_requests(self) -> list[Request]:
+        return list(self._finished)
+
     def attach(self, context: BrowserContext) -> None:
-        context.on("request", self._on_request)
-        context.on("requestfinished", self._on_request_finished)
+        """Observe ``context`` only; anything recorded from an earlier context is discarded."""
+        self._context = context
+        self.request_count = 0
+        self._finished = []
+
+        def on_request(request: Request) -> None:
+            if context is self._context:
+                self._on_request(request)
+
+        def on_request_finished(request: Request) -> None:
+            if context is self._context:
+                self._on_request_finished(request)
+
+        context.on("request", on_request)
+        context.on("requestfinished", on_request_finished)
 
     def _matches(self, request: Request) -> bool:
         return request.method == "POST" and request.url == self._url

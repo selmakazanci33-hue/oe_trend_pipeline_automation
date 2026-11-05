@@ -20,6 +20,7 @@ from sisense.models import (
     UnexpectedResponseError,
     UnverifiedEndpointError,
 )
+from sisense.request_metadata import ForwardedHeaders
 from sisense.retry import TRANSIENT_HTTP_STATUSES, RetryPolicy, run_with_retry
 from validation.validators import count_value_cells, parse_json_body, validate_jaql_payload
 
@@ -58,8 +59,12 @@ class SisenseJaqlClient:
         retry_policy: RetryPolicy,
         endpoint: str = VERIFIED_JAQL_URL,
         sleep: Callable[[float], None] = time.sleep,
+        request_metadata: ForwardedHeaders | None = None,
     ):
         assert_verified_endpoint(endpoint)
+        if request_metadata is not None and not isinstance(request_metadata, ForwardedHeaders):
+            raise TypeError("request_metadata must come from the observed dashboard request")
+        self._request_metadata = request_metadata
         self._context = context
         self._endpoint = endpoint
         self._timeouts = timeouts
@@ -104,11 +109,15 @@ class SisenseJaqlClient:
             "JAQL attempt %d/%d (timeout %.0f sec)",
             attempt, self._retry_policy.max_attempts, timeout / 1000,
         )
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._request_metadata is not None:
+            headers.update(self._request_metadata.as_headers())
+            logger.info("Forwarding observed request metadata headers: %s", self._request_metadata.names())
         attempt_started = time.monotonic()
         response = self._context.request.post(
             self._endpoint,
             data=data,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers=headers,
             timeout=timeout,
             fail_on_status_code=False,
             max_redirects=0,

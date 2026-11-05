@@ -23,8 +23,19 @@ from config.settings import (
 from sisense.auth import AuthenticatedSession, SisenseAuthenticator
 from sisense.client import SisenseJaqlClient
 from sisense.diagnostics import BrowserJaqlObserver, log_cookie_diagnostics
-from sisense.models import JaqlQuery, MetricResult, SisenseError, VerifiedJaqlPayloadRequired
+from sisense.models import (
+    JaqlQuery,
+    MetricResult,
+    RequestMetadataUnavailable,
+    SisenseError,
+    VerifiedJaqlPayloadRequired,
+)
 from sisense.payloads.currently_enrolled import build_currently_enrolled_query
+from sisense.request_metadata import (
+    ForwardedHeaders,
+    csrf_header_matches_context_cookie,
+    headers_from_observed_request,
+)
 from sisense.retry import RetryPolicy
 from validation.validators import extract_count_measure_value
 
@@ -66,12 +77,47 @@ def print_report(result: MetricResult, baseline: int, widget_title: str) -> None
     print(RULE)
 
 
-def retrieve_value(session: AuthenticatedSession, settings: Settings, query: JaqlQuery) -> int:
+def wait_for_dashboard_jaql(session: AuthenticatedSession, observer: BrowserJaqlObserver, timeout: int) -> None:
+    """Wait passively until the dashboard's own JAQL POST has finished at least once."""
+    if observer.finished_count:
+        return
+    try:
+        session.context.wait_for_event(
+            "requestfinished",
+            predicate=lambda r: r.method == "POST" and r.url == VERIFIED_JAQL_URL,
+            timeout=timeout,
+        )
+    except PlaywrightTimeoutError:
+        pass
+
+
+def obtain_request_metadata(
+    session: AuthenticatedSession, observer: BrowserJaqlObserver, settings: Settings
+) -> ForwardedHeaders:
+    wait_for_dashboard_jaql(session, observer, settings.timeouts.slow)
+    forwarded = headers_from_observed_request(observer)
+    if not csrf_header_matches_context_cookie(forwarded, session.context):
+        raise RequestMetadataUnavailable(
+            "Observed CSRF header does not match the current BrowserContext cookie; "
+            "refusing to send the application JAQL request"
+        )
+    logger.info("Request metadata taken from observed dashboard JAQL request: %s", forwarded.names())
+    logger.info("CSRF header matches current BrowserContext cookie: True")
+    return forwarded
+
+
+def retrieve_value(
+    session: AuthenticatedSession,
+    settings: Settings,
+    query: JaqlQuery,
+    request_metadata: ForwardedHeaders | None = None,
+) -> int:
     """Send the verified JAQL through the same BrowserContext that authenticated."""
     client = SisenseJaqlClient(
         session.context,
         timeouts=settings.timeouts,
         retry_policy=RetryPolicy.from_settings(settings.retry),
+        request_metadata=request_metadata,
     )
     response = client.execute(query)
     return extract_count_measure_value(response.body, query.body, query.primary_measure_title)
@@ -82,16 +128,8 @@ def run_session_diagnostics(
 ) -> None:
     logger.info("[debug] Authenticated BrowserContext ready (reused saved state: %s)",
                 session.reused_saved_state)
-    if observer is not None and observer.finished_count == 0:
-        try:
-            session.page.context.wait_for_event(
-                "requestfinished",
-                predicate=lambda r: r.method == "POST" and r.url == VERIFIED_JAQL_URL,
-                timeout=settings.timeouts.default,
-            )
-        except PlaywrightTimeoutError:
-            pass
     if observer is not None:
+        wait_for_dashboard_jaql(session, observer, settings.timeouts.default)
         observer.log_summary()
     log_cookie_diagnostics(session.context)
 
@@ -123,7 +161,8 @@ def main() -> int:
                     return EXIT_OK
                 if settings.debug_session:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
-                value = retrieve_value(session, settings, query)
+                request_metadata = obtain_request_metadata(session, authenticator.jaql_observer, settings)
+                value = retrieve_value(session, settings, query, request_metadata)
             finally:
                 session.close()
     except MissingVerifiedInformation as exc:

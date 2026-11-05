@@ -55,8 +55,9 @@ class SisenseAuthenticator:
         self._settings = settings
         self._password_prompt = password_prompt
         self._navigation_retry = RetryPolicy.from_settings(settings.retry)
-        observe = settings.debug_session or settings.diagnostics_only
-        self.jaql_observer = BrowserJaqlObserver() if observe else None
+        # Always attached: the application's JAQL request reuses metadata from the
+        # dashboard's own successful JAQL request. Observation is passive.
+        self.jaql_observer = BrowserJaqlObserver()
 
     def open_session(self) -> AuthenticatedSession:
         """Return a browser context that is verified to be on the target dashboard."""
@@ -100,8 +101,7 @@ class SisenseAuthenticator:
             context = browser.new_context()
         context.set_default_timeout(self._settings.timeouts.default)
         context.set_default_navigation_timeout(self._settings.timeouts.slow)
-        if self.jaql_observer is not None:
-            self.jaql_observer.attach(context)
+        self.jaql_observer.attach(context)
         return context
 
     # Locators -----------------------------------------------------------

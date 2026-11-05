@@ -87,14 +87,18 @@ class MainModeTests(unittest.TestCase):
     def test_normal_mode_still_retrieves(self):
         pw = FakePlaywright([])
         settings = self.settings()
-        with mock.patch.object(app, "retrieve_value", return_value=812345) as retrieve, \
+        metadata = object()
+        with mock.patch.object(app, "obtain_request_metadata", return_value=metadata) as obtain, \
+             mock.patch.object(app, "retrieve_value", return_value=812345) as retrieve, \
              mock.patch.object(app, "run_session_diagnostics") as diagnostics, \
              mock.patch("builtins.print"):
             exit_code = self.run_main(settings, pw)
         self.assertEqual(exit_code, app.EXIT_OK)
+        obtain.assert_called_once()
         retrieve.assert_called_once()
         diagnostics.assert_not_called()
         self.assertIs(retrieve.call_args.args[0].context, pw.chromium.browser.contexts[0])
+        self.assertIs(retrieve.call_args.args[3], metadata)
 
 
 class DiagnosticsOnlySettingsTests(unittest.TestCase):
@@ -116,8 +120,8 @@ class DiagnosticsOnlySettingsTests(unittest.TestCase):
         settings = type(base)(**{**base.__dict__, "diagnostics_only": True, "debug_session": False})
         self.assertIsNotNone(SisenseAuthenticator(None, settings).jaql_observer)
 
-    def test_no_observer_in_plain_normal_mode(self):
-        self.assertIsNone(SisenseAuthenticator(None, make_settings()).jaql_observer)
+    def test_observer_attached_in_normal_mode(self):
+        self.assertIsNotNone(SisenseAuthenticator(None, make_settings()).jaql_observer)
 
 
 if __name__ == "__main__":

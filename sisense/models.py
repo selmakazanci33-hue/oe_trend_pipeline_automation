@@ -40,6 +40,10 @@ class BrowserNotAvailableError(SisenseError):
     """The configured installed browser channel could not be launched."""
 
 
+class RequestMetadataUnavailable(SisenseError):
+    """Required request metadata could not be taken from a successful dashboard JAQL request."""
+
+
 class VerifiedJaqlPayloadRequired(SisenseError):
     """The verified JAQL payload for a metric has not been supplied."""
 
