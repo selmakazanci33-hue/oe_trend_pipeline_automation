@@ -15,7 +15,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from metrics.catalog import STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED, WAVE1_TARGETS
+from metrics.catalog import DISCOVERY_TARGETS, STATE_DISCOVERED, STATE_PENDING, STATE_VERIFIED
 from metrics.discovery import MetricDiscovery
 from reporting.formatting import fmt_time
 from sisense.discovery import DiscoveryResult, WidgetDiscovery, normalize_label
@@ -25,7 +25,7 @@ HTML_NAME = "wave1_metric_discovery.html"
 JSON_NAME = "wave1_metric_discovery.json"
 
 _STATE_CLASS = {STATE_VERIFIED: "verified", STATE_DISCOVERED: "discovered", STATE_PENDING: "pending"}
-_TARGET_LABELS = {normalize_label(t.label): t.label for t in WAVE1_TARGETS}
+_TARGET_LABELS = {normalize_label(t.label): t.label for t in DISCOVERY_TARGETS}
 
 
 def _widget_dict(widget: WidgetDiscovery) -> dict[str, Any]:
@@ -188,7 +188,7 @@ Structure only: no metric values, filter values, payloads or credentials.</p>
 <span>{_state_badge(STATE_DISCOVERED)} {counts[STATE_DISCOVERED]}</span>
 <span>{_state_badge(STATE_PENDING)} {counts[STATE_PENDING]}</span></div></header>
 <main>
-<section class="card"><h2>Wave 1 targets</h2>
+<section class="card"><h2>Discovery targets</h2>
 <table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Shape</th><th>HTTP</th><th>Status</th><th>Reason</th></tr></thead>
 <tbody>{_summary_rows(metrics)}</tbody></table>
 <p class="muted">DISCOVERED is not VERIFIED: discovered widgets are not stored in history or shown in the executive dashboard.</p></section>

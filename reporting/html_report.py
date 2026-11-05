@@ -38,7 +38,7 @@ from reporting.formatting import (
     fmt_time,
 )
 from reporting.model import DATA_LIVE, DATA_NOT_AVAILABLE, DATA_PARTIAL, DATA_STALE, MetricPanel, ReportModel
-from reporting.series_semantics import CURRENTLY_ENROLLED_SNAPSHOT_TREND
+from reporting.series_semantics import CURRENTLY_ENROLLED_SNAPSHOT_TREND, SeriesIdentity
 
 LATEST_REPORT = Path("latest") / "index.html"
 
@@ -132,6 +132,18 @@ def chart_figure(model: ReportModel) -> dict:
         "annotations": annotations,
     }
     return {"data": traces, "layout": layout}
+
+
+def source_daily_activity_figure(*identities: SeriesIdentity) -> dict | None:
+    """Daily SOURCE cancellation chart. Absent until identities are independently verified.
+
+    Never uses Currently Enrolled snapshot history as the x-axis or data source.
+    A dedicated source-series store is required before traces can be rendered.
+    """
+    from metrics.source_series import production_daily_chart_allowed
+    if not identities or any(not production_daily_chart_allowed(identity) for identity in identities):
+        return None
+    return None
 
 
 def _comparison_card(comparison: Comparison) -> str:

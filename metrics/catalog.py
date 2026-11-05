@@ -319,6 +319,42 @@ WAVE1_TARGETS: tuple[DiscoveryTarget, ...] = (
 )
 
 
+KIND_PEOPLE_AGGREGATE = "people_aggregate"
+KIND_DAILY_POLICY_SERIES = "daily_policy_series"
+GRAIN_DAYS = "days"
+
+
+@dataclass(frozen=True)
+class CancellationCandidate:
+    """Discovery/validation identity only. No widget id, fingerprint, or payload until observed."""
+
+    metric_id: str
+    display_name: str
+    discovery_label: str
+    section_id: str
+    kind: str
+
+
+# Search labels are the source measure names to look for exactly in natural JAQL.
+# Display names stay on the production roadmap. Widget ids are not invented here.
+CANCELLATION_CANDIDATES: dict[str, CancellationCandidate] = {c.metric_id: c for c in (
+    CancellationCandidate("enrolled_cancelled", "Enrolled & Cancelled", "Enrolled & Cancelled",
+                          SECTION_CANCELLATION_OVERVIEW, KIND_PEOPLE_AGGREGATE),
+    CancellationCandidate("cancelled_not_enrolled", "Cancelled — Not Enrolled", "Cancelled - Not Enrolled",
+                          SECTION_CANCELLATION_OVERVIEW, KIND_PEOPLE_AGGREGATE),
+    CancellationCandidate("cancelled_policies_daily", "Cancelled Policies — Daily", "Cancelled Policies",
+                          SECTION_CANCELLATION_ACTIVITY, KIND_DAILY_POLICY_SERIES),
+    CancellationCandidate("terminated_policies_daily", "Terminated Policies — Daily", "Terminated Policies",
+                          SECTION_CANCELLATION_ACTIVITY, KIND_DAILY_POLICY_SERIES),
+)}
+
+CANCELLATION_TARGETS: tuple[DiscoveryTarget, ...] = tuple(
+    DiscoveryTarget(c.metric_id, c.discovery_label, "enrollment") for c in CANCELLATION_CANDIDATES.values()
+)
+
+DISCOVERY_TARGETS: tuple[DiscoveryTarget, ...] = WAVE1_TARGETS + CANCELLATION_TARGETS
+
+
 VALUE_COUNT = "count"
 VALUE_PERCENT = "percent"
 
@@ -340,6 +376,11 @@ RUNTIME_VALIDATION_TARGETS: tuple[RuntimeValidationTarget, ...] = (
     RuntimeValidationTarget("new_enrolled", VALUE_COUNT),
     RuntimeValidationTarget("active_enrolled", VALUE_COUNT),
     RuntimeValidationTarget("passive_enrolled", VALUE_COUNT),
+)
+
+# Cancellation/termination: extracted for developer review only. Never production.
+CANCELLATION_VALIDATION_TARGETS: tuple[RuntimeValidationTarget, ...] = tuple(
+    RuntimeValidationTarget(c.metric_id, VALUE_COUNT) for c in CANCELLATION_CANDIDATES.values()
 )
 
 

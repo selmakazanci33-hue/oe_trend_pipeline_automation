@@ -50,6 +50,8 @@ class DiscoveryMainTests(PipelineHarness):
             "applications_started": "VERIFIED", "submitted_applications": "VERIFIED",
             "new_enrolled": "VERIFIED", "active_enrolled": "VERIFIED", "passive_enrolled": "VERIFIED",
             "total_applicants": "PENDING", "cancelled": "PENDING", "terminated": "PENDING",
+            "enrolled_cancelled": "PENDING", "cancelled_not_enrolled": "PENDING",
+            "cancelled_policies_daily": "PENDING", "terminated_policies_daily": "PENDING",
         })
         shapes = {w["widget_id"]: w["response"]["shape"] for w in doc["widgets"]}
         self.assertEqual(shapes["w7"], "TIME_SERIES")

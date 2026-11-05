@@ -18,6 +18,7 @@ from metrics.fingerprint_evidence import CandidateEvidence, EvidenceOutcome
 from metrics.runtime_validation import (
     RV_NOT_AVAILABLE,
     RV_PENDING,
+    RV_SERIES_EXTRACTED,
     RV_VALIDATION_FAILED,
     RV_VALUE_EXTRACTED,
     ControlComparison,
@@ -30,7 +31,8 @@ VALIDATION_DIR = Path("validation")
 HTML_NAME = "wave1_runtime_validation.html"
 JSON_NAME = "wave1_runtime_validation.json"
 
-_STATUS_CLASS = {RV_VALUE_EXTRACTED: "ok", RV_NOT_AVAILABLE: "na", RV_VALIDATION_FAILED: "fail", RV_PENDING: "pending"}
+_STATUS_CLASS = {RV_VALUE_EXTRACTED: "ok", RV_SERIES_EXTRACTED: "ok", RV_NOT_AVAILABLE: "na",
+                 RV_VALIDATION_FAILED: "fail", RV_PENDING: "pending"}
 
 
 def format_runtime_value(row: RuntimeValue) -> str:
@@ -82,6 +84,44 @@ def evidence_document(outcome: EvidenceOutcome) -> dict[str, Any]:
             }
             for e in outcome.evidence
         ],
+        "cancellation_candidates": [
+            {
+                "metric_id": e.metric_id,
+                "label": e.label,
+                "widget_id": e.widget_id,
+                "widget_title": e.widget_title,
+                "datasource": e.datasource,
+                "measure_titles": list(e.measure_titles),
+                "measure_count": e.measure_count,
+                "bound_measure_title": e.bound_measure_title,
+                "date_dimension_title": e.date_dimension_title,
+                "time_grain": e.time_grain,
+                "date_semantics": e.date_semantics,
+                "series_point_count": e.series_point_count,
+                "binding": e.binding,
+                "definition_fingerprint": e.fingerprint,
+                "extraction_status": e.extraction_status,
+                "runtime_value": e.value,
+                "http_status": e.http_status,
+                "observed_at_utc": e.observed_at_utc,
+                "eligible_for_future_promotion": e.eligible,
+                "eligibility_reason": e.eligibility_reason,
+                "fingerprint_stability": outcome.comparison.results.get(e.metric_id),
+            }
+            for e in outcome.cancellation
+        ],
+        "cancellation_shared_widgets": [
+            {
+                "widget_id": s.widget_id,
+                "metric_ids": list(s.metric_ids),
+                "same_fingerprint": s.same_fingerprint,
+                "distinct_exact_measures": s.distinct_measures,
+                "exact_measure_binding": s.exact_binding,
+                "all_eligible": s.all_eligible,
+                "structurally_eligible_together": s.eligible_together,
+            }
+            for s in outcome.cancellation_shared
+        ],
         "shared_widgets": [
             {
                 "widget_id": s.widget_id,
@@ -119,6 +159,26 @@ def _evidence_html(outcome: EvidenceOutcome | None) -> str:
         f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}</span></td></tr>"
         for s in outcome.shared
     )
+    cancellation_rows = "".join(
+        f"<tr><td>{_e(e.label)}<div class=\"muted\">{_e(e.metric_id)}</div></td>"
+        f"<td>{_e(e.widget_title)}<div class=\"muted\">{_e(e.widget_id)}</div></td><td>{_e(e.datasource)}</td>"
+        f"<td>{_e(' | '.join(e.measure_titles))}<div class=\"muted\">{e.measure_count} measure(s)</div></td>"
+        f"<td>{_e(e.bound_measure_title)}</td><td>{_e(e.date_dimension_title)}</td><td>{_e(e.time_grain)}</td>"
+        f"<td>{_e(e.date_semantics)}<div class=\"muted\">{_e(e.series_point_count)}</div></td>"
+        f"<td>{_e(e.extraction_status)}</td><td>{_e(e.http_status)}</td>"
+        f"<td><span class=\"badge {'ok' if e.eligible else 'fail'}\">{'ELIGIBLE' if e.eligible else 'NOT ELIGIBLE'}</span>"
+        f"<div class=\"muted\">{_e(e.eligibility_reason) if e.eligibility_reason else ''}</div></td>"
+        f"<td>{_e(outcome.comparison.results.get(e.metric_id))}</td><td class=\"fp\">{_e(e.fingerprint)}</td></tr>"
+        for e in outcome.cancellation
+    )
+    cancellation_shared = "".join(
+        f"<tr><td>{_e(s.widget_id)}</td><td>{_e(', '.join(s.metric_ids))}</td>"
+        f"<td>{'YES' if s.same_fingerprint else 'NO'}</td><td>{'YES' if s.distinct_measures else 'NO'}</td>"
+        f"<td>{'YES' if s.exact_binding else 'NO'}</td>"
+        f"<td><span class=\"badge {'ok' if s.eligible_together else 'fail'}\">"
+        f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}</span></td></tr>"
+        for s in outcome.cancellation_shared
+    )
     recorded = ("Recorded as a fingerprint observation." if outcome.observation_recorded
                 else f"Not recorded as a fingerprint observation ({outcome.observation_note}).")
     baseline = outcome.comparison.baseline_observed_at_utc
@@ -131,7 +191,18 @@ Stability compares this run (Observation B) with the previous recorded observati
 <th>Definition Fingerprint</th></tr></thead><tbody>{rows}</tbody></table></section>
 <section class="card"><h2>Shared-widget check</h2>
 <table class="grid"><thead><tr><th>Widget</th><th>Metrics</th><th>Same fingerprint</th><th>Distinct exact measures</th>
-<th>Exact binding</th><th>Result</th></tr></thead><tbody>{shared}</tbody></table></section>"""
+<th>Exact binding</th><th>Result</th></tr></thead><tbody>{shared}</tbody></table></section>
+<section class="card"><h2>Cancellation / termination evidence — validation only</h2>
+<p class="muted">People-level aggregates and daily policy series are independent. Exact measure-title binding only.
+No positional fallback. Daily series require a verified date dimension, grain, and date semantics.
+Nothing here is shown on the executive dashboard.</p>
+<table class="grid"><thead><tr><th>Metric</th><th>Widget</th><th>Datasource</th><th>Exact measure titles</th>
+<th>Bound measure</th><th>Date dimension</th><th>Grain</th><th>Date semantics</th>
+<th>Extraction</th><th>HTTP</th><th>Future promotion</th><th>A/B</th>
+<th>Definition Fingerprint</th></tr></thead><tbody>{cancellation_rows}</tbody></table></section>
+<section class="card"><h2>Cancellation shared-widget check</h2>
+<table class="grid"><thead><tr><th>Widget</th><th>Metrics</th><th>Same fingerprint</th><th>Distinct exact measures</th>
+<th>Exact binding</th><th>Result</th></tr></thead><tbody>{cancellation_shared}</tbody></table></section>"""
 
 
 def validation_document(
@@ -157,6 +228,13 @@ def validation_document(
                 "production_status": r.production_status,
                 "reason": r.reason,
                 "definition_fingerprint": r.definition_fingerprint,
+                "datasource": r.datasource,
+                "measure_titles": list(r.measure_titles),
+                "bound_measure_title": r.bound_measure_title,
+                "date_dimension_title": r.date_dimension_title,
+                "time_grain": r.time_grain,
+                "date_semantics": r.date_semantics,
+                "series_point_count": r.series_point_count,
             }
             for r in rows
         ],

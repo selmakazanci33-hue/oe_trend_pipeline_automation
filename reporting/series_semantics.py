@@ -28,13 +28,16 @@ class SeriesIdentity:
     date_semantics: str | None = None
 
 
+def identity_complete(identity: SeriesIdentity) -> bool:
+    """True only when metric identity, filters, grain, and date semantics are all known."""
+    return all(getattr(identity, name) is not None for name in _IDENTITY_FIELDS)
+
+
 def series_equivalent(left: SeriesIdentity, right: SeriesIdentity) -> bool:
     """True only when every identity field is present on both sides and equal."""
-    for name in _IDENTITY_FIELDS:
-        a, b = getattr(left, name), getattr(right, name)
-        if a is None or b is None or a != b:
-            return False
-    return True
+    if not identity_complete(left) or not identity_complete(right):
+        return False
+    return all(getattr(left, name) == getattr(right, name) for name in _IDENTITY_FIELDS)
 
 
 # Production snapshot trend: stored validated Currently Enrolled observations.

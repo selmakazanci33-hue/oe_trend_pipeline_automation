@@ -53,7 +53,7 @@ from metrics.catalog import (
     STATE_DISCOVERED,
     STATE_PENDING,
     STATE_VERIFIED,
-    WAVE1_TARGETS,
+    DISCOVERY_TARGETS,
     passive_metrics,
 )
 from metrics.discovery import resolve_targets
@@ -68,6 +68,7 @@ from metrics.passive_metrics import (
 from metrics.runtime_validation import (
     RV_NOT_AVAILABLE,
     RV_PENDING,
+    RV_SERIES_EXTRACTED,
     RV_VALIDATION_FAILED,
     RV_VALUE_EXTRACTED,
     ControlComparison,
@@ -430,7 +431,7 @@ def create_discovery_observer(settings: Settings, query: JaqlQuery) -> Discovery
     return DiscoveryObserver(
         dashboard_id=settings.dashboard_id,
         datasource_id=VERIFIED_DATASOURCE["id"],
-        target_labels=[target.label for target in WAVE1_TARGETS],
+        target_labels=[target.label for target in DISCOVERY_TARGETS],
         verified_widget_id=verified_widget_id,
     )
 
@@ -512,7 +513,8 @@ def capture_runtime_values(
     logger.info(
         "Wave 1 runtime validation: %s",
         ", ".join(f"{status} {sum(r.status == status for r in rows)}"
-                  for status in (RV_VALUE_EXTRACTED, RV_NOT_AVAILABLE, RV_VALIDATION_FAILED, RV_PENDING)),
+                  for status in (RV_VALUE_EXTRACTED, RV_SERIES_EXTRACTED, RV_NOT_AVAILABLE,
+                                 RV_VALIDATION_FAILED, RV_PENDING)),
     )
     return RuntimeCapture(rows, passive_value, reason)
 
@@ -552,6 +554,13 @@ def finish_runtime_validation(
             eligible = "ELIGIBLE" if e.eligible else f"NOT ELIGIBLE ({e.eligibility_reason})"
             print(f"    {e.label:<26}{evidence.comparison.results.get(e.metric_id, ''):<14}{eligible}")
         for s in evidence.shared:
+            print(f"    Shared widget {', '.join(s.metric_ids)}: "
+                  f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}")
+        print("  Cancellation / termination evidence (validation only; not production)")
+        for e in evidence.cancellation:
+            eligible = "ELIGIBLE" if e.eligible else f"NOT ELIGIBLE ({e.eligibility_reason})"
+            print(f"    {e.label:<26}{evidence.comparison.results.get(e.metric_id, ''):<14}{eligible}")
+        for s in evidence.cancellation_shared:
             print(f"    Shared widget {', '.join(s.metric_ids)}: "
                   f"{'ELIGIBLE TOGETHER' if s.eligible_together else 'NOT ELIGIBLE'}")
         print(f"    Fingerprint observation: "

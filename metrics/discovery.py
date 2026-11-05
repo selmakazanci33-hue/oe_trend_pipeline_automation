@@ -11,10 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from metrics.catalog import (
+    DISCOVERY_TARGETS,
     STATE_DISCOVERED,
     STATE_PENDING,
     STATE_VERIFIED,
-    WAVE1_TARGETS,
     DiscoveryTarget,
     catalog_state,
 )
@@ -72,7 +72,7 @@ def _verified(target: DiscoveryTarget, matched: list[WidgetDiscovery]) -> Metric
 
 
 def resolve_targets(
-    result: DiscoveryResult, targets: tuple[DiscoveryTarget, ...] = WAVE1_TARGETS
+    result: DiscoveryResult, targets: tuple[DiscoveryTarget, ...] = DISCOVERY_TARGETS
 ) -> tuple[MetricDiscovery, ...]:
     resolved = []
     for target in targets:

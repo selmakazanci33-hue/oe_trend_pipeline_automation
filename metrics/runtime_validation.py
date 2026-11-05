@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from metrics.catalog import (
+    CANCELLATION_CANDIDATES,
+    CANCELLATION_VALIDATION_TARGETS,
+    DISCOVERY_TARGETS,
     PROMOTION_CANDIDATES,
     RUNTIME_VALIDATION_TARGETS,
     STATE_DISCOVERED,
@@ -36,6 +39,7 @@ from sisense.passive import ExpectedWidgetQuery, _request_payload, definition_fi
 from validation.validators import extract_measure_value, parse_json_body, result_measure_titles
 
 RV_VALUE_EXTRACTED = "VALUE_EXTRACTED"
+RV_SERIES_EXTRACTED = "SERIES_EXTRACTED"
 RV_NOT_AVAILABLE = "NOT_AVAILABLE"
 RV_VALIDATION_FAILED = "VALIDATION_FAILED"
 RV_PENDING = "PENDING"
@@ -43,7 +47,7 @@ RV_PENDING = "PENDING"
 BINDING_MEASURE_TITLE = "exact measure title"
 BINDING_SINGLE_MEASURE_WIDGET = "widget title of a single-measure widget"
 
-_LABELS = {t.metric_id: t.label for t in WAVE1_TARGETS}
+_LABELS = {t.metric_id: t.label for t in DISCOVERY_TARGETS}
 _RUNTIME_TARGET_IDS = frozenset(t.metric_id for t in RUNTIME_VALIDATION_TARGETS)
 
 
@@ -77,6 +81,10 @@ class RuntimeValue:
     datasource: str | None = None
     measure_titles: tuple[str, ...] = ()
     bound_measure_title: str | None = None
+    date_dimension_title: str | None = None
+    time_grain: str | None = None
+    date_semantics: str | None = None
+    series_point_count: int | None = None
 
     @property
     def production_status(self) -> str:
@@ -85,6 +93,8 @@ class RuntimeValue:
             return catalog_state(self.metric_id)
         if self.metric_id in PROMOTION_CANDIDATES:
             return "VALIDATION ONLY — awaiting verified filter fingerprint"
+        if self.metric_id in CANCELLATION_CANDIDATES:
+            return "VALIDATION ONLY — awaiting verified source definition"
         if self.metric_id in _RUNTIME_TARGET_IDS:
             return f"{STATE_DISCOVERED} — awaiting UI verification"
         return STATE_PENDING
@@ -221,7 +231,41 @@ def validate_runtime_values(
             binding=binding.basis if binding else None, reason=reason,
             bound_measure_title=binding.title if binding else None, **common,
         ))
-    in_scope = {t.metric_id for t in targets}
+    from metrics.cancellation import extract_cancellation
+    for target in CANCELLATION_VALIDATION_TARGETS:
+        candidate = CANCELLATION_CANDIDATES[target.metric_id]
+        metric = by_id.get(target.metric_id)
+        label = candidate.discovery_label
+        if metric is None or metric.state not in (STATE_DISCOVERED, STATE_VERIFIED) or metric.widget is None:
+            rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, value_kind=target.value_kind,
+                                     reason=f"Not DISCOVERED in this run: {metric.reason if metric else 'not observed'}"))
+            continue
+        widget = metric.widget
+        common = dict(value_kind=target.value_kind, widget_id=widget.structure.widget_id,
+                      widget_title=widget.structure.widget_title,
+                      shape=widget.response.shape if widget.response else None,
+                      http_status=widget.response.http_status if widget.response else None)
+        entry = observer.entry(widget.structure.widget_id)
+        request = entry.latest_request if entry else None
+        payload = _request_payload(request) if request is not None else None
+        if payload is None:
+            rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **common,
+                                     reason="Dashboard request not retained"))
+            continue
+        common["definition_fingerprint"] = definition_fingerprint(payload)
+        common["datasource"] = _datasource_title(payload)
+        common["measure_titles"] = _observed_measure_titles(payload)
+        status, text = _read_response(request)
+        if status != 200:
+            rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **{**common, "http_status": status},
+                                     reason=f"Dashboard response HTTP {status}"))
+            continue
+        if text is None:
+            rows.append(RuntimeValue(target.metric_id, label, RV_VALIDATION_FAILED, **common,
+                                     reason="Response body unavailable"))
+            continue
+        rows.append(extract_cancellation(candidate, payload, text, common))
+    in_scope = {t.metric_id for t in targets} | {t.metric_id for t in CANCELLATION_VALIDATION_TARGETS}
     for target in WAVE1_TARGETS:
         if target.metric_id not in in_scope and catalog_state(target.metric_id) == STATE_PENDING:
             metric = by_id.get(target.metric_id)

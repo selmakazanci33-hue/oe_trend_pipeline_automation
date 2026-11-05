@@ -5,7 +5,14 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from metrics.catalog import METRICS, RUNTIME_VALIDATION_TARGETS, VALUE_COUNT, VALUE_PERCENT, active_metrics
+from metrics.catalog import (
+    CANCELLATION_CANDIDATES,
+    METRICS,
+    RUNTIME_VALIDATION_TARGETS,
+    VALUE_COUNT,
+    VALUE_PERCENT,
+    active_metrics,
+)
 from metrics.discovery import resolve_targets
 from metrics.runtime_validation import (
     BINDING_MEASURE_TITLE,
@@ -230,8 +237,12 @@ class PendingAndControlTests(unittest.TestCase):
     def test_scope_is_exactly_seven_plus_pending(self):
         rows, _ = runtime_rows(*natural_wave1())
         self.assertEqual(len(RUNTIME_VALIDATION_TARGETS), 7)
-        self.assertEqual(set(rows), {t.metric_id for t in RUNTIME_VALIDATION_TARGETS} | {"cancelled", "terminated"})
+        self.assertEqual(set(rows), {t.metric_id for t in RUNTIME_VALIDATION_TARGETS} | {"cancelled", "terminated"}
+                         | set(CANCELLATION_CANDIDATES))
         self.assertNotIn("currently_enrolled_people", rows)
+        for metric_id in CANCELLATION_CANDIDATES:
+            self.assertEqual(rows[metric_id].status, RV_VALIDATION_FAILED)
+            self.assertIn("Not DISCOVERED", rows[metric_id].reason)
 
     def test_control_comparison(self):
         _, observer = runtime_rows(*natural_wave1())

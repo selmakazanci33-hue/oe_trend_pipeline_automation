@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from metrics.catalog import PROMOTION_CANDIDATES, MetricDefinition
+from metrics.catalog import CANCELLATION_CANDIDATES, PROMOTION_CANDIDATES, MetricDefinition
 from metrics.runtime_validation import BINDING_MEASURE_TITLE, RV_VALUE_EXTRACTED, RuntimeValue
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,10 @@ class CandidateEvidence:
     observed_at_utc: str
     eligible: bool
     eligibility_reason: str | None
+    date_dimension_title: str | None = None
+    time_grain: str | None = None
+    date_semantics: str | None = None
+    series_point_count: int | None = None
 
     @property
     def measure_count(self) -> int:
@@ -93,6 +97,54 @@ def candidate_evidence(rows: tuple[RuntimeValue, ...], observed_at_utc: str) -> 
     return tuple(evidence)
 
 
+def cancellation_candidate_evidence(
+    rows: tuple[RuntimeValue, ...], observed_at_utc: str, control_passed: bool
+) -> tuple[CandidateEvidence, ...]:
+    from metrics.cancellation import cancellation_eligibility
+    by_id = {r.metric_id: r for r in rows}
+    evidence = []
+    for metric_id, candidate in CANCELLATION_CANDIDATES.items():
+        row = by_id.get(metric_id)
+        if row is None:
+            evidence.append(CandidateEvidence(
+                metric_id, candidate.display_name, None, None, None, (), None, None, None, "NOT OBSERVED",
+                None, None, observed_at_utc, False, "Not in runtime validation scope"))
+            continue
+        reason = cancellation_eligibility(row, candidate, control_passed)
+        evidence.append(CandidateEvidence(
+            metric_id, row.label, row.widget_id, row.widget_title, row.datasource, row.measure_titles,
+            row.bound_measure_title, row.binding, row.definition_fingerprint, row.status, row.value,
+            row.http_status, observed_at_utc, reason is None, reason,
+            row.date_dimension_title, row.time_grain, row.date_semantics, row.series_point_count,
+        ))
+    return tuple(evidence)
+
+
+def shared_widget_checks_by_observation(evidence: tuple[CandidateEvidence, ...]) -> tuple[SharedWidgetCheck, ...]:
+    """Group cancellation candidates by the widget actually observed (no pre-declared widget id)."""
+    groups: dict[str, list[str]] = {}
+    for e in evidence:
+        if e.widget_id:
+            groups.setdefault(e.widget_id, []).append(e.metric_id)
+    by_id = {e.metric_id: e for e in evidence}
+    checks = []
+    for widget_id, metric_ids in groups.items():
+        if len(metric_ids) < 2:
+            continue
+        items = [by_id[m] for m in metric_ids]
+        prints = {e.fingerprint for e in items}
+        titles = [e.bound_measure_title for e in items]
+        checks.append(SharedWidgetCheck(
+            widget_id=widget_id,
+            metric_ids=tuple(metric_ids),
+            same_fingerprint=len(prints) == 1 and None not in prints,
+            distinct_measures=None not in titles and len(set(titles)) == len(titles),
+            exact_binding=all(e.binding == BINDING_MEASURE_TITLE and e.widget_id == widget_id for e in items),
+            all_eligible=all(e.eligible for e in items),
+        ))
+    return tuple(checks)
+
+
 @dataclass(frozen=True)
 class SharedWidgetCheck:
     widget_id: str
@@ -133,19 +185,21 @@ def shared_widget_checks(evidence: tuple[CandidateEvidence, ...]) -> tuple[Share
 
 def observation_record(evidence: tuple[CandidateEvidence, ...], observed_at_utc: str) -> dict[str, Any]:
     """Safe, value-free record of one observation (identities, exact measure titles, fingerprints)."""
-    return {
-        "observed_at_utc": observed_at_utc,
-        "candidates": {
-            e.metric_id: {
-                "widget_id": e.widget_id,
-                "measure_titles": list(e.measure_titles),
-                "bound_measure_title": e.bound_measure_title,
-                "fingerprint": e.fingerprint,
-                "extraction_status": e.extraction_status,
-            }
-            for e in evidence
-        },
-    }
+    candidates = {}
+    for e in evidence:
+        entry = {
+            "widget_id": e.widget_id,
+            "measure_titles": list(e.measure_titles),
+            "bound_measure_title": e.bound_measure_title,
+            "fingerprint": e.fingerprint,
+            "extraction_status": e.extraction_status,
+        }
+        if e.date_dimension_title or e.time_grain or e.date_semantics:
+            entry["date_dimension_title"] = e.date_dimension_title
+            entry["time_grain"] = e.time_grain
+            entry["date_semantics"] = e.date_semantics
+        candidates[e.metric_id] = entry
+    return {"observed_at_utc": observed_at_utc, "candidates": candidates}
 
 
 @dataclass(frozen=True)
@@ -209,6 +263,8 @@ class EvidenceOutcome:
     comparison: FingerprintComparison
     observation_recorded: bool
     observation_note: str | None
+    cancellation: tuple[CandidateEvidence, ...] = ()
+    cancellation_shared: tuple[SharedWidgetCheck, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,18 +393,22 @@ def collect_evidence(
 ) -> EvidenceOutcome:
     """Compare with the previous observation and record this one (only when the control passed)."""
     evidence = candidate_evidence(rows, observed_at_utc)
+    cancellation = cancellation_candidate_evidence(rows, observed_at_utc, control_passed)
     shared = shared_widget_checks(evidence)
+    cancellation_shared = shared_widget_checks_by_observation(cancellation)
+    combined = evidence + cancellation
     if log_path is None:
-        return EvidenceOutcome(evidence, shared, compare_observation(None, evidence), False,
-                               "No history directory configured")
+        return EvidenceOutcome(evidence, shared, compare_observation(None, combined), False,
+                               "No history directory configured", cancellation, cancellation_shared)
     try:
         observations = load_observations(log_path)
     except ObservationLogError as exc:
-        return EvidenceOutcome(evidence, shared, compare_observation(None, evidence), False,
-                               f"{exc}; left untouched")
-    comparison = compare_observation(observations[-1] if observations else None, evidence)
+        return EvidenceOutcome(evidence, shared, compare_observation(None, combined), False,
+                               f"{exc}; left untouched", cancellation, cancellation_shared)
+    comparison = compare_observation(observations[-1] if observations else None, combined)
     if not control_passed:
         return EvidenceOutcome(evidence, shared, comparison, False,
-                               "Not recorded: Currently Enrolled control did not pass")
-    append_observation(log_path, observations, observation_record(evidence, observed_at_utc))
-    return EvidenceOutcome(evidence, shared, comparison, True, None)
+                               "Not recorded: Currently Enrolled control did not pass",
+                               cancellation, cancellation_shared)
+    append_observation(log_path, observations, observation_record(combined, observed_at_utc))
+    return EvidenceOutcome(evidence, shared, comparison, True, None, cancellation, cancellation_shared)
