@@ -44,6 +44,15 @@ class DatabaseConnection:
     def sanitize(self, message: str) -> str:
         return self._redact(message)
 
+    def set_query_timeout(self, seconds: int) -> None:
+        """Set the driver query timeout. This is not the login timeout."""
+        if self._closed:
+            raise DatabaseConnectionError("Connection is closed")
+        if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds < 1:
+            raise DatabaseConnectionError("Query timeout must be a positive integer")
+        if hasattr(self._raw, "timeout"):
+            self._raw.timeout = seconds
+
     def close(self) -> None:
         if self._closed:
             return

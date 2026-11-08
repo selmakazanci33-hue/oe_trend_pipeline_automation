@@ -186,10 +186,16 @@ are filled in, check the connection manually:
 ```
 
 The command prints `Database connection: PASS` or `Database connection: FAILED`.
-Phase 4A does not extract Plan Year 2026 or 2027. The later pipeline, not
-built yet, is: identify the authoritative table, apply one business rule to
-both plan years, then compare month, issuer, enrollment count, and enrollee
-count, and only after that compare the result with validated Sisense values.
+
+Source discovery is a separate command. It does not run from `main.py` and it
+does not contact Sisense. It writes aggregate counts only:
+
+```powershell
+.\.venv\Scripts\python.exe -m database.discovery.enrollment_source
+```
+
+Plan year comes from `coverage_year`, not from a table name or a calendar year.
+The PY2026 vs PY2027 comparison is not built yet.
 
 ## Unit tests
 
