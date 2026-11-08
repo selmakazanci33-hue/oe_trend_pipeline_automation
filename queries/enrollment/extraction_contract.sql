@@ -1,0 +1,26 @@
+-- Enrollment extraction contract (Phase 4A). Not a production query.
+-- This file has no SELECT. Do not point it at a guessed table.
+--
+-- Historical evidence only. These names are NOT the authoritative source
+-- for a PY2026 vs PY2027 comparison until a later phase identifies that table:
+--   dbo.Enrollments_PY2526_NOV30
+--   dbo.Enrollments_TEST
+--   dbo.Enrollments_PY2026
+--
+-- The next phase discovers the authoritative table and validates whether
+-- these columns exist before any extraction or comparison is written:
+--   coverage_year
+--   month or activity date
+--   hios_issuer_id
+--   enrollment_id
+--   enrollee_id
+--   enrollment_status_description
+--   enrollee_status_description
+--   application_type
+--   enrollment_confirmation_date
+--
+-- Future pipeline, not implemented here:
+-- Enrollment DB -> authoritative source discovery -> PY2026 records ->
+-- PY2027 records -> consistent business-rule normalization -> month ->
+-- issuer -> Enrollment Count -> Enrollee Count -> same-month comparison ->
+-- variance / percentage change -> validated Sisense comparison -> trend charts.

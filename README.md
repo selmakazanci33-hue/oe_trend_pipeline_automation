@@ -169,6 +169,26 @@ in history and never promoted automatically.
 $env:SISENSE_RUNTIME_VALIDATION="true"; .\.venv\Scripts\python.exe main.py
 ```
 
+## Enrollment database source
+
+Sisense and the enrollment database are separate sources. `main.py` retrieves
+Sisense metrics only and does not open a database connection.
+
+The database package reads FFM/enrollment records from SQL Server. Credentials
+live in `.env` (`DB_SERVER`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`,
+`DB_DRIVER`, `DB_PORT`) and are never printed. After those values are filled
+in, check the connection manually:
+
+```powershell
+.\.venv\Scripts\python.exe -m database.check_connection
+```
+
+The command prints `Database connection: PASS` or `Database connection: FAILED`.
+Phase 4A does not extract Plan Year 2026 or 2027. The later pipeline, not
+built yet, is: identify the authoritative table, apply one business rule to
+both plan years, then compare month, issuer, enrollment count, and enrollee
+count, and only after that compare the result with validated Sisense values.
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
