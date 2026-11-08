@@ -6,6 +6,7 @@ Run explicitly:
 - ``python -m comparison.lifecycle``
 - ``python -m comparison.diagnostic_numbers``
 - ``python -m comparison.monthly_population``
+- ``python -m comparison.latest_state``
 
 ``main.py`` does not import or run this package. None of the commands send JAQL.
 The diagnostic command is not an official year-over-year metric.

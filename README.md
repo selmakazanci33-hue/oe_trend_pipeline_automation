@@ -233,6 +233,14 @@ does not treat those dates as proven as-of points or as a YoY comparison.
 .\.venv\Scripts\python.exe -m comparison.monthly_population
 ```
 
+A latest-state people diagnostic is a separate command. It recovers NOV30/DEC31
+only when timestamp evidence supports those calendar dates, and it counts one
+latest row per person. It does not replace the Phase 4D snapshot-population counts.
+
+```powershell
+.\.venv\Scripts\python.exe -m comparison.latest_state
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
