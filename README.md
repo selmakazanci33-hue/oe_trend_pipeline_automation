@@ -241,6 +241,26 @@ latest row per person. It does not replace the Phase 4D snapshot-population coun
 .\.venv\Scripts\python.exe -m comparison.latest_state
 ```
 
+A PY2027 status-metric inventory is a separate command. It classifies Pending,
+Cancelled, and Terminated from the verified Currently Enrolled payload, the
+metric catalog, stored snapshots, and any existing discovery artifact. It does
+not send JAQL, does not change Currently Enrolled People, and does not create a
+dashboard.
+
+To refresh natural dashboard evidence first, use the existing discovery flag
+(normal Sisense login; no experimental status-filtered JAQL):
+
+```powershell
+$env:SISENSE_DISCOVERY="true"; .\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe -m sisense.status_metric_inventory
+```
+
+The inventory command alone is:
+
+```powershell
+.\.venv\Scripts\python.exe -m sisense.status_metric_inventory
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
