@@ -225,6 +225,14 @@ stored, run `main.py` first.
 .\.venv\Scripts\python.exe -m comparison.diagnostic_numbers
 ```
 
+A PY2026 monthly snapshot population series is a separate command. It catalogs
+`Enrollments_PY2526_*` filename-dated snapshots, counts DISTINCT people, and
+does not treat those dates as proven as-of points or as a YoY comparison.
+
+```powershell
+.\.venv\Scripts\python.exe -m comparison.monthly_population
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
