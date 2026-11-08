@@ -289,6 +289,15 @@ columns or OE dates. Event activity is extracted from one snapshot only when
 .\.venv\Scripts\python.exe -m database.comparison.field_mapping
 ```
 
+Event-date semantic validation is a separate command. It inspects
+`enrollment_last_update_date` one snapshot at a time, does not union monthly
+tables, and does not treat field existence as supported event semantics or as
+a COMPARABLE metric.
+
+```powershell
+.\.venv\Scripts\python.exe -m database.comparison.event_date_validation
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the

@@ -7,7 +7,9 @@ import tempfile
 import unittest
 from datetime import date
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from comparison.currently_enrolled import VERIFIED_PAYLOAD_FILE, interpret_payload
 from comparison.daily import load_oe_anchor, oe_day
@@ -28,6 +30,8 @@ from database.comparison.field_mapping import (
     currently_enrolled_checklist,
     field_mapping_rows,
     oe_anchor_evidence,
+    print_summary,
+    select_event_date_candidate,
     write_report,
 )
 from database.models import QueryResult
@@ -67,12 +71,14 @@ COLUMNS = {
 
 
 class FakeClient:
-    def __init__(self, tables, columns=None, overlap=3, cancelled_days=None, terminated_days=None):
+    def __init__(self, tables, columns=None, overlap=3, cancelled_days=None, terminated_days=None,
+                 status_values=None):
         self.tables = tables
         self.columns = columns or {table: dict(COLUMNS) for _, table, _ in tables}
         self.overlap = overlap
         self.cancelled_days = cancelled_days or [(date(2025, 11, 1), Decimal("2")), (date(2025, 11, 2), Decimal("3"))]
         self.terminated_days = terminated_days
+        self.status_values = status_values or [("Enrolled", 5), ("Cancelled", 2), ("Terminated", 1)]
         self.calls = []
 
     def execute_query(self, sql, params=None):
@@ -90,7 +96,7 @@ class FakeClient:
         if "AS duplicate_enrollment_ids" in sql:
             return result(("row_count", "distinct_enrollment_ids", "duplicate_enrollment_ids"), [(10, 8, 2)])
         if "AS status_value" in sql:
-            return result(("status_value", "row_count"), [("Enrolled", 5), ("Cancelled", 2), ("Terminated", 1)])
+            return result(("status_value", "row_count"), self.status_values)
         if "AS enrolled_cancelled_people" in sql:
             return result(
                 ("enrolled_cancelled_people", "cancelled_not_enrolled_people",
@@ -120,23 +126,72 @@ class FakeClient:
 class MappingTests(unittest.TestCase):
     def test_last_update_date_is_not_assumed_equal_to_timestamp(self):
         columns = {
-            "enrollment_id": {"name": "enrollment_id"},
-            "enrollment_status_description": {"name": "enrollment_status_description"},
-            "enrollment_last_update_date": {"name": "enrollment_last_update_date"},
+            "enrollment_id": {"name": "enrollment_id", "data_type": "bigint"},
+            "enrollment_status_description": {"name": "enrollment_status_description", "data_type": "varchar"},
+            "enrollment_last_update_date": {"name": "enrollment_last_update_date", "data_type": "datetime2"},
         }
         rows = field_mapping_rows(columns, ["Cancelled"])
         timestamp = [item for item in rows if item["py2027_field"] == "enrollment.last_update_timestamp"]
         names = {item["py2026_candidate"]: item["confidence"] for item in timestamp}
         self.assertEqual(names.get("enrollment_last_update_date"), "NAME_SIMILAR_UNPROVEN")
         self.assertNotIn("last_update_timestamp", names)
+        self.assertTrue(all(item["py2027_field"] == "enrollment.last_update_timestamp" for item in rows))
+        selected = select_event_date_candidate(columns)
+        self.assertEqual(selected["py2026_candidate"], "enrollment_last_update_date")
+        self.assertEqual(selected["confidence"], "NAME_SIMILAR_UNPROVEN")
+
+    def test_enrollment_id_is_never_event_date_candidate(self):
+        columns = {
+            "enrollment_id": {"name": "enrollment_id", "data_type": "bigint"},
+            "enrollment_status_description": {"name": "enrollment_status_description", "data_type": "varchar"},
+            "enrollment_last_update_date": {"name": "enrollment_last_update_date", "data_type": "datetime2"},
+        }
+        selected = select_event_date_candidate(columns)
+        self.assertNotEqual(selected["py2026_candidate"], "enrollment_id")
+        rows = field_mapping_rows(columns, ["Cancelled"])
+        self.assertFalse(any(item.get("py2026_candidate") == "enrollment_id" for item in rows))
+        self.assertFalse(any(item.get("py2027_field") == "enrollment.id" for item in rows))
+
+    def test_event_date_candidate_requires_datetime_type(self):
+        columns = {
+            "enrollment_id": {"name": "enrollment_id", "data_type": "varchar"},
+            "last_update_timestamp": {"name": "last_update_timestamp", "data_type": "varchar"},
+            "enrollment_last_update_date": {"name": "enrollment_last_update_date", "data_type": "varchar"},
+        }
+        selected = select_event_date_candidate(columns)
+        self.assertIsNone(selected["py2026_candidate"])
+        self.assertEqual(selected["confidence"], "ABSENT")
+        missing_type = select_event_date_candidate({
+            "enrollment_last_update_date": {"name": "enrollment_last_update_date"},
+        })
+        self.assertIsNone(missing_type["py2026_candidate"])
+
+    def test_print_summary_does_not_select_enrollment_id_as_event_date(self):
+        live_columns = {key: value for key, value in COLUMNS.items() if key != "last_update_timestamp"}
+        client = FakeClient(
+            [("dbo", "Enrollments_PY2526_NOV30", "BASE TABLE")],
+            columns={"Enrollments_PY2526_NOV30": live_columns},
+            overlap=0,
+        )
+        report = build_report(attach_activity_series(client, collect_evidence(client, definition())))
+        self.assertEqual(report["event_date_candidate"]["py2026_candidate"], "enrollment_last_update_date")
+        self.assertNotEqual(report["event_date_candidate"]["py2026_candidate"], "enrollment_id")
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            print_summary(report)
+        text = buf.getvalue()
+        self.assertIn("enrollment_last_update_date", text)
+        self.assertNotIn("event-date candidate: enrollment_id", text)
 
     def test_status_mapping_does_not_treat_canceled_as_cancelled(self):
-        rows = field_mapping_rows(
-            {"enrollment_status_description": {"name": "enrollment_status_description"}},
-            ["Canceled"],
+        client = FakeClient(
+            [("dbo", "Enrollments_PY2526_01312026", "BASE TABLE")],
+            overlap=0,
+            status_values=[("Canceled", 2)],
         )
-        status = next(item for item in rows if "status_description" in item["py2027_field"])
-        self.assertIn("not observed", status["notes"])
+        report = build_report(attach_activity_series(client, collect_evidence(client, definition())))
+        self.assertFalse(report["status_mapping"]["cancelled_observed"])
+        self.assertTrue(report["status_mapping"]["canceled_variant_observed"])
 
     def test_identifier_classifier_skips_pii_names(self):
         self.assertIsNone(classify_identifier_column("email_address"))

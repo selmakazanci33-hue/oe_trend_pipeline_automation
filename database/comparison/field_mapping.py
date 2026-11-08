@@ -78,6 +78,20 @@ EVENT_DATE_CANDIDATES = (
     "enrollment_confirmation_date",
     "benefit_effective_date",
 )
+DATETIME_SQL_TYPES = frozenset({
+    "date",
+    "datetime",
+    "datetime2",
+    "datetimeoffset",
+    "smalldatetime",
+})
+EVENT_DATE_PREFERRED = (
+    ("last_update_timestamp", EXACT_NAME),
+    ("enrollment_last_update_date", NAME_SIMILAR),
+    ("enrollment_update_date", NAME_SIMILAR),
+)
+NOT_DATETIME = "NOT_DATETIME"
+REJECTED_IDENTIFIER = "REJECTED_IDENTIFIER"
 LIFECYCLE_FIELD_HINTS = (
     "enrollment_create_date",
     "enrollment_confirmation_date",
@@ -157,44 +171,118 @@ def classify_identifier_column(name: str) -> str | None:
     return None
 
 
-def field_mapping_rows(columns: dict, status_values: list[str]) -> list[dict]:
-    """Candidate map for the three Sisense activity fields."""
-    cancelled_observed = any(_is_cancelled(item) for item in status_values)
-    term_observed = any(_is_term(item) for item in status_values)
-    rows = [
-        _map_row(
-            "enrollment.id",
-            None if "enrollment_id" not in columns else columns["enrollment_id"]["name"],
-            EXACT_NAME if "enrollment_id" in columns else ABSENT,
-            "Schema name match to the Sisense enrollment identifier." if "enrollment_id" in columns
-            else "No enrollment_id column in this snapshot.",
+def is_datetime_sql_type(data_type: str | None) -> bool:
+    """True only for date/time SQL types. SQL Server timestamp/rowversion is excluded."""
+    if not data_type:
+        return False
+    base = str(data_type).split("(")[0].strip().lower()
+    return base in DATETIME_SQL_TYPES
+
+
+def is_blocked_event_date_name(name: str | None) -> bool:
+    """Identifiers are never event-date candidates, regardless of datatype or name score."""
+    if not name:
+        return True
+    if classify_identifier_column(name) is not None:
+        return True
+    key = name.lower()
+    if key.endswith("_id") or key.endswith("_ids"):
+        return True
+    if key.endswith("_proxy") or "_proxy_" in key or key.endswith("_id_proxy"):
+        return True
+    if "identifier" in key:
+        return True
+    return False
+
+
+def select_event_date_candidate(columns: dict) -> dict:
+    """Fail-closed EVENT_DATE selection. Name matching alone is not enough.
+
+    Requires a date/time-compatible SQL datatype. Identifiers are rejected.
+    Unrelated date columns are not used as fallbacks. If none qualify, the
+    candidate is null.
+    """
+    empty = {
+        "py2026_candidate": None,
+        "sql_datatype": None,
+        "confidence": ABSENT,
+        "datetime_compatible": False,
+        "reason": (
+            "No date/time-compatible event-date candidate. "
+            "Name matching is not sufficient and identifiers are never selected."
         ),
-        _map_row(
-            "enrollment.enrollment_status_description",
-            None if "enrollment_status_description" not in columns
-            else columns["enrollment_status_description"]["name"],
-            EXACT_NAME if "enrollment_status_description" in columns else ABSENT,
-            _status_note(cancelled_observed, term_observed, "enrollment_status_description" in columns),
-        ),
-    ]
+    }
+    if not columns:
+        return empty
+    for key, confidence in EVENT_DATE_PREFERRED:
+        meta = columns.get(key)
+        if meta is None:
+            continue
+        name = meta.get("name") or key
+        dtype = meta.get("data_type")
+        if is_blocked_event_date_name(name):
+            continue
+        if not is_datetime_sql_type(dtype):
+            continue
+        return {
+            "py2026_candidate": name,
+            "sql_datatype": dtype,
+            "confidence": confidence,
+            "datetime_compatible": True,
+            "reason": (
+                "Column name and date/time SQL datatype both match. "
+                "Semantic equivalence to Sisense enrollment.last_update_timestamp is unproven."
+            ),
+        }
+    return empty
+
+
+def field_mapping_rows(columns: dict, status_values: list[str] | None = None) -> list[dict]:
+    """Inventory of possible Sisense last_update_timestamp counterparts.
+
+    Identifier and status fields are not event-date rows. Presence of a date
+    column name does not select it; see select_event_date_candidate.
+    """
+    del status_values
+    rows = []
     for candidate in EVENT_DATE_CANDIDATES:
-        present = candidate in columns
-        confidence = ABSENT if not present else CONFIDENCE_FOR_SISENSE_DATE[candidate]
-        note = (
-            "Exact Sisense event-date column name."
-            if confidence == EXACT_NAME else
-            "Present in historical work. Not proven equal to Sisense last_update_timestamp."
-            if confidence == NAME_SIMILAR else
-            "Not treated as the cancellation/termination event date."
-            if present else
-            "Column not in this snapshot schema."
-        )
-        rows.append(_map_row(
-            "enrollment.last_update_timestamp",
-            None if not present else columns[candidate]["name"],
-            confidence,
-            note,
-        ))
+        meta = columns.get(candidate)
+        present = meta is not None
+        name = None if not present else meta["name"]
+        dtype = None if not present else meta.get("data_type")
+        blocked = bool(name) and is_blocked_event_date_name(name)
+        datetime_ok = is_datetime_sql_type(dtype)
+        if not present:
+            confidence = ABSENT
+            note = "Column not in this snapshot schema."
+        elif blocked:
+            confidence = REJECTED_IDENTIFIER
+            note = "Identifier columns cannot be event-date candidates."
+        elif not datetime_ok:
+            confidence = NOT_DATETIME
+            note = (
+                "Column name is not sufficient. EVENT_DATE requires a date/time-compatible "
+                "SQL datatype. This column was not selected."
+            )
+        else:
+            confidence = CONFIDENCE_FOR_SISENSE_DATE[candidate]
+            note = (
+                "Exact Sisense event-date column name and date/time SQL datatype."
+                if confidence == EXACT_NAME else
+                "Present with a date/time SQL datatype. Not proven equal to Sisense last_update_timestamp."
+                if confidence == NAME_SIMILAR else
+                "Not treated as the cancellation/termination event date."
+            )
+        rows.append({
+            "py2027_field": "enrollment.last_update_timestamp",
+            "py2026_candidate": name,
+            "sql_datatype": dtype,
+            "datetime_compatible": datetime_ok,
+            "identifier_rejected": blocked,
+            "evidence": "INFORMATION_SCHEMA datatype plus column name",
+            "confidence": confidence,
+            "notes": note,
+        })
     return rows
 
 
@@ -454,6 +542,7 @@ def build_report(evidence: dict, *, py2027_activity_history: str = "PENDING") ->
             "canceled_variant_observed": any(str(item).strip().casefold() == "canceled" for item in statuses),
             "term_prefix_observed": term_observed,
         },
+        "event_date_candidate": select_event_date_candidate(columns),
         "event_date_mapping": mapping_rows,
         "snapshot_duplication_risk": {
             "overlapping_enrollment_ids": overlap_total,
@@ -563,6 +652,7 @@ def render_html(report: dict) -> str:
         "<tr>"
         f"<td>{_e(item.get('py2027_field'))}</td>"
         f"<td>{_e(item.get('py2026_candidate'))}</td>"
+        f"<td>{_e(item.get('sql_datatype'))}</td>"
         f"<td>{_e(item.get('evidence'))}</td>"
         f"<td>{_e(item.get('confidence'))}</td>"
         f"<td>{_e(item.get('notes'))}</td>"
@@ -600,8 +690,11 @@ def render_html(report: dict) -> str:
         "<h2>3. Status mapping</h2>"
         f"<p>{_e(report.get('status_mapping'))}</p>"
         "<h2>4. Event-date mapping</h2>"
-        "<table><thead><tr><th>PY2027_FIELD</th><th>PY2026_CANDIDATE</th><th>EVIDENCE</th>"
-        "<th>CONFIDENCE</th><th>NOTES</th></tr></thead>"
+        "<p><strong>Selected EVENT_DATE candidate (fail-closed):</strong> "
+        f"{_e(report.get('event_date_candidate'))}</p>"
+        "<p>An identifier is never selected. Name matching without a date/time SQL datatype is not enough.</p>"
+        "<table><thead><tr><th>PY2027_FIELD</th><th>PY2026_CANDIDATE</th><th>SQL_DATATYPE</th>"
+        "<th>EVIDENCE</th><th>CONFIDENCE</th><th>NOTES</th></tr></thead>"
         f"<tbody>{mapping}</tbody></table>"
         "<h2>5. Snapshot duplication risk</h2>"
         f"<p>{_e(report.get('snapshot_duplication_risk'))}</p>"
@@ -629,14 +722,9 @@ def print_summary(report: dict) -> None:
     ident = report.get("enrollment_identifier_mapping") or {}
     person = report.get("person_identifier_mapping") or {}
     status = report.get("status_mapping") or {}
-    event = next(
-        (item for item in report.get("event_date_mapping") or [] if item.get("confidence") == EXACT_NAME),
-        {"py2026_candidate": None, "confidence": ABSENT},
-    )
-    similar = next(
-        (item for item in report.get("event_date_mapping") or [] if item.get("confidence") == NAME_SIMILAR),
-        None,
-    )
+    event = report.get("event_date_candidate") or {
+        "py2026_candidate": None, "confidence": ABSENT, "sql_datatype": None,
+    }
     ready = report.get("activity_readiness") or {}
     oe = report.get("oe_anchor_evidence") or {}
     tables = ", ".join(item.get("table") or "" for item in report.get("profiles") or []) or "(schema not read)"
@@ -645,10 +733,12 @@ def print_summary(report: dict) -> None:
     print(f"PY2026 enrollment-id candidate: {ident.get('py2026_candidate')} ({ident.get('confidence')})")
     print(f"PY2026 person-id candidate: {person.get('label')} ({person.get('identity_status')})")
     print(f"PY2026 status field: {status.get('py2026_candidate')}")
+    datatype = event.get("sql_datatype")
     print(
         "PY2026 event-date candidate: "
-        f"{event.get('py2026_candidate') or (None if similar is None else similar.get('py2026_candidate'))} "
-        f"({event.get('confidence') if event.get('py2026_candidate') else (ABSENT if similar is None else similar.get('confidence'))})"
+        f"{event.get('py2026_candidate')} "
+        f"({event.get('confidence')}"
+        f"{'' if not datatype else f', {datatype}'})"
     )
     for key in ("cancelled_policies", "terminated_policies", "currently_enrolled_people",
                 "enrolled_cancelled", "cancelled_not_enrolled"):
