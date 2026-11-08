@@ -261,6 +261,34 @@ The inventory command alone is:
 .\.venv\Scripts\python.exe -m sisense.status_metric_inventory
 ```
 
+A PY2026 vs PY2027 comparison foundation is a separate command. It classifies
+metrics as COMPARABLE, DIAGNOSTIC, or NOT_COMPARABLE. It reads stored PY2027
+snapshots when present, does not send JAQL, does not open the enrollment
+database, and does not invent PY2026 equivalents. `main.py` is unchanged.
+
+```powershell
+.\.venv\Scripts\python.exe -m comparison.comparability
+```
+
+Optional OE lifecycle anchors may be set as `OE_ANCHOR_DATE_PY2026` and
+`OE_ANCHOR_DATE_PY2027` (`YYYY-MM-DD`). A year stays unaligned when its
+anchor is blank. Those dates are not hardcoded.
+
+PY2026 semantic requirements (no database connection, no PY2027 query):
+
+```powershell
+.\.venv\Scripts\python.exe -m database.comparison.discovery
+```
+
+Phase 5B field mapping inspects PY2026 snapshot schemas and aggregate counts.
+It does not send JAQL, does not query coverage year 2027, and does not invent
+columns or OE dates. Event activity is extracted from one snapshot only when
+`last_update_timestamp` is present by that name.
+
+```powershell
+.\.venv\Scripts\python.exe -m database.comparison.field_mapping
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
