@@ -27,14 +27,12 @@ from database.query_runner import (
 )
 from sisense.payloads.currently_enrolled import METRIC_NAME, PLAN_YEAR
 
-FAKE_PASSWORD = "fake-db-password"
+USERNAME = "reader@example.invalid"
 ENV = {
     "DB_SERVER": "sql.example.internal",
     "DB_DATABASE": "enrollment",
-    "DB_USERNAME": "reader",
-    "DB_PASSWORD": FAKE_PASSWORD,
+    "DB_USERNAME": USERNAME,
     "DB_DRIVER": "ODBC Driver 17 for SQL Server",
-    "DB_PORT": "1433",
 }
 
 
@@ -69,7 +67,7 @@ class FakeRaw:
     def close(self):
         self.closed = True
         if self.fail_close:
-            raise RuntimeError(f"close failed PWD={FAKE_PASSWORD}")
+            raise RuntimeError(f"close failed for {USERNAME} (40532)")
 
 
 def _config():
@@ -81,10 +79,11 @@ class ConfigurationTests(unittest.TestCase):
         config = _config()
         self.assertEqual(config.server, "sql.example.internal")
         self.assertEqual(config.database, "enrollment")
-        self.assertEqual(config.username, "reader")
-        self.assertEqual(config.password, FAKE_PASSWORD)
+        self.assertEqual(config.username, USERNAME)
         self.assertEqual(config.driver, "ODBC Driver 17 for SQL Server")
-        self.assertEqual(config.port, 1433)
+        self.assertEqual(config.timeout_seconds, 300)
+        self.assertFalse(hasattr(config, "password"))
+        self.assertFalse(hasattr(config, "port"))
 
     def test_loads_from_env_file_without_touching_process_environment(self):
         import os
@@ -105,44 +104,73 @@ class ConfigurationTests(unittest.TestCase):
             load_database_config(environ=incomplete)
         message = str(caught.exception)
         self.assertEqual(message, "Missing required database configuration: DB_SERVER")
-        self.assertNotIn(FAKE_PASSWORD, message)
+        self.assertNotIn(USERNAME, message)
         self.assertNotIn("sql.example.internal", message)
+
+    def test_missing_database_and_username_fail_safely(self):
+        for name in ("DB_DATABASE", "DB_USERNAME"):
+            incomplete = {key: value for key, value in ENV.items() if key != name}
+            with self.assertRaises(DatabaseConfigurationError) as caught:
+                load_database_config(environ=incomplete)
+            self.assertEqual(str(caught.exception), f"Missing required database configuration: {name}")
+            self.assertNotIn(USERNAME, str(caught.exception))
 
     def test_missing_several_variables_are_listed_by_name(self):
         with self.assertRaises(DatabaseConfigurationError) as caught:
             load_database_config(environ={"DB_DRIVER": "ODBC Driver 17 for SQL Server"})
         self.assertEqual(
             str(caught.exception),
-            "Missing required database configuration: DB_SERVER, DB_DATABASE, DB_USERNAME, DB_PASSWORD",
+            "Missing required database configuration: DB_SERVER, DB_DATABASE, DB_USERNAME",
         )
 
-    def test_invalid_port_does_not_echo_the_value(self):
-        bad = dict(ENV, DB_PORT=FAKE_PASSWORD)
-        with self.assertRaises(DatabaseConfigurationError) as caught:
-            load_database_config(environ=bad)
-        self.assertEqual(str(caught.exception), "DB_PORT must be an integer")
-        self.assertNotIn(FAKE_PASSWORD, str(caught.exception))
+    def test_password_and_port_are_not_required_and_do_not_change_the_server(self):
+        source = dict(ENV)
+        source["DB_PASSWORD"] = "not-used"
+        source["DB_PORT"] = "1433"
+        config = load_database_config(environ=source)
+        connection_string = config.odbc_connection_string()
+        self.assertEqual(config.server, "sql.example.internal")
+        self.assertIn("SERVER=sql.example.internal;", connection_string)
+        self.assertNotIn(",1433", connection_string)
+        self.assertNotIn("PWD=", connection_string)
+        self.assertNotIn("not-used", connection_string)
+        self.assertNotIn("not-used", repr(config))
 
-    def test_driver_and_port_default_when_omitted(self):
-        source = {key: ENV[key] for key in ("DB_SERVER", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD")}
+    def test_driver_and_timeout_default_when_omitted(self):
+        source = {key: ENV[key] for key in ("DB_SERVER", "DB_DATABASE", "DB_USERNAME")}
         config = load_database_config(environ=source)
         self.assertEqual(config.driver, "ODBC Driver 17 for SQL Server")
-        self.assertEqual(config.port, 1433)
+        self.assertEqual(config.timeout_seconds, 300)
 
-    def test_repr_omits_password(self):
+    def test_custom_timeout(self):
+        config = load_database_config(environ=dict(ENV, DB_CONNECTION_TIMEOUT="90"))
+        self.assertEqual(config.timeout_seconds, 90)
+        self.assertIn("Connection Timeout=90;", config.odbc_connection_string())
+
+    def test_invalid_timeout_does_not_echo_the_value(self):
+        bad = dict(ENV, DB_CONNECTION_TIMEOUT=USERNAME)
+        with self.assertRaises(DatabaseConfigurationError) as caught:
+            load_database_config(environ=bad)
+        self.assertEqual(str(caught.exception), "DB_CONNECTION_TIMEOUT must be an integer")
+        self.assertNotIn(USERNAME, str(caught.exception))
+
+    def test_repr_omits_username_and_connection_string(self):
         config = _config()
-        self.assertNotIn(FAKE_PASSWORD, repr(config))
-        self.assertNotIn("PWD=", repr(config))
+        rendered = repr(config)
+        self.assertNotIn(USERNAME, rendered)
+        self.assertNotIn("PWD=", rendered)
+        self.assertNotIn("Authentication=", rendered)
 
 
 class SecretRedactionTests(unittest.TestCase):
-    def test_password_and_connection_string_are_removed(self):
+    def test_connection_string_is_removed_and_error_code_remains(self):
         leaked = (
-            "Login failed DRIVER={ODBC Driver 17 for SQL Server};"
-            f"SERVER=sql.example.internal,1433;PWD={FAKE_PASSWORD};UID=reader"
+            "Login failed (40532) DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER=sql.example.internal;UID={USERNAME};Authentication=ActiveDirectoryInteractive;"
         )
-        message = sanitize_database_message(leaked, FAKE_PASSWORD)
-        self.assertNotIn(FAKE_PASSWORD, message)
+        message = sanitize_database_message(leaked, USERNAME)
+        self.assertIn("(40532)", message)
+        self.assertNotIn(USERNAME, message)
         self.assertNotIn("PWD=", message)
         self.assertNotIn("UID=", message)
         self.assertNotIn("DRIVER=", message)
@@ -150,10 +178,12 @@ class SecretRedactionTests(unittest.TestCase):
 
     def test_example_file_has_placeholders_only(self):
         example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
-        for name in ("DB_SERVER", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD", "DB_DRIVER", "DB_PORT"):
+        for name in ("DB_SERVER", "DB_DATABASE", "DB_USERNAME", "DB_DRIVER", "DB_CONNECTION_TIMEOUT"):
             self.assertIn(name, example)
-        self.assertIn("DB_PASSWORD=\n", example.replace("\r\n", "\n"))
-        self.assertNotIn(FAKE_PASSWORD, example)
+        self.assertNotIn("DB_PASSWORD", example)
+        self.assertNotIn("DB_PORT", example)
+        self.assertIn("DB_CONNECTION_TIMEOUT=300", example)
+        self.assertNotIn(USERNAME, example)
 
 
 class ConnectionFactoryTests(unittest.TestCase):
@@ -168,20 +198,34 @@ class ConnectionFactoryTests(unittest.TestCase):
         config = _config()
         connection = database_connection(config, connector=connector)
         connection.close()
-        self.assertEqual(seen["timeout"], config.timeout_seconds)
-        self.assertIn("PWD=", seen["connection_string"])
-        self.assertNotIn(seen["connection_string"], repr(config))
+        text = seen["connection_string"]
+        self.assertEqual(seen["timeout"], 300)
+        self.assertIn("SERVER=sql.example.internal;", text)
+        self.assertNotIn(",1433", text)
+        self.assertIn(f"UID={USERNAME};", text)
+        self.assertIn("Authentication=ActiveDirectoryInteractive;", text)
+        self.assertIn("Encrypt=yes;", text)
+        self.assertIn("TrustServerCertificate=yes;", text)
+        self.assertIn("Connection Timeout=300;", text)
+        self.assertNotIn("PWD=", text)
+        self.assertNotIn("Trusted_Connection", text)
+        self.assertNotIn("Integrated Security", text)
+        self.assertEqual(text.count("Authentication="), 1)
+        self.assertNotIn(text, repr(config))
+        self.assertNotIn(USERNAME, repr(config))
 
     def test_open_failure_is_sanitized(self):
         def connector(connection_string, timeout):
-            raise RuntimeError(connection_string)
+            raise RuntimeError(f"(40532) {connection_string}")
 
         with self.assertRaises(Exception) as caught:
             database_connection(_config(), connector=connector)
         message = str(caught.exception)
-        self.assertNotIn(FAKE_PASSWORD, message)
+        self.assertIn("(40532)", message)
+        self.assertNotIn(USERNAME, message)
         self.assertNotIn("PWD=", message)
         self.assertNotIn("DRIVER=", message)
+        self.assertNotIn("Authentication=", message)
 
     def test_context_manager_closes_on_success_and_on_error(self):
         raw = FakeRaw()
@@ -205,7 +249,8 @@ class ConnectionFactoryTests(unittest.TestCase):
         connection = database_connection(_config(), connector=lambda *args, **kwargs: raw)
         with self.assertRaises(Exception) as caught:
             connection.close()
-        self.assertNotIn(FAKE_PASSWORD, str(caught.exception))
+        self.assertIn("(40532)", str(caught.exception))
+        self.assertNotIn(USERNAME, str(caught.exception))
         self.assertNotIn("PWD=", str(caught.exception))
 
 
@@ -281,10 +326,10 @@ class QueryTests(unittest.TestCase):
     def test_path_escape_is_rejected(self):
         with self.assertRaises(Exception) as caught:
             load_query_file("../config/settings.py")
-        self.assertNotIn(FAKE_PASSWORD, str(caught.exception))
+        self.assertNotIn(USERNAME, str(caught.exception))
 
-    def test_driver_error_is_sanitized(self):
-        raw = FakeRaw(fail_message=f"driver said PWD={FAKE_PASSWORD} DRIVER={{x}}")
+    def test_driver_error_keeps_the_code_and_hides_the_username(self):
+        raw = FakeRaw(fail_message=f"login failed for {USERNAME} (40532)")
         client, _raw = self._client(raw)
         try:
             with self.assertRaises(Exception) as caught:
@@ -292,9 +337,9 @@ class QueryTests(unittest.TestCase):
         finally:
             client._connection.close()
         message = str(caught.exception)
-        self.assertNotIn(FAKE_PASSWORD, message)
+        self.assertIn("(40532)", message)
+        self.assertNotIn(USERNAME, message)
         self.assertNotIn("PWD=", message)
-        self.assertNotIn("DRIVER=", message)
 
 
 class CheckCommandTests(unittest.TestCase):
@@ -308,7 +353,8 @@ class CheckCommandTests(unittest.TestCase):
             code = check_connection_main()
         self.assertEqual(code, 0)
         self.assertIn("Database connection: PASS", stdout.getvalue())
-        self.assertNotIn(FAKE_PASSWORD, stdout.getvalue())
+        self.assertNotIn(USERNAME, stdout.getvalue())
+        self.assertNotIn("PWD=", stdout.getvalue())
         self.assertTrue(raw.closed)
 
     def test_failure_line_names_a_missing_variable_and_not_a_secret(self):
@@ -321,7 +367,8 @@ class CheckCommandTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Database connection: FAILED", text)
         self.assertIn("DB_SERVER", text)
-        self.assertNotIn(FAKE_PASSWORD, text)
+        self.assertNotIn(USERNAME, text)
+        self.assertNotIn("PWD=", text)
 
 
 class IsolationTests(unittest.TestCase):

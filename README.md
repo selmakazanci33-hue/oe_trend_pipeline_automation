@@ -174,10 +174,12 @@ $env:SISENSE_RUNTIME_VALIDATION="true"; .\.venv\Scripts\python.exe main.py
 Sisense and the enrollment database are separate sources. `main.py` retrieves
 Sisense metrics only and does not open a database connection.
 
-The database package reads FFM/enrollment records from SQL Server. Credentials
-live in `.env` (`DB_SERVER`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`,
-`DB_DRIVER`, `DB_PORT`) and are never printed. After those values are filled
-in, check the connection manually:
+The database package reads FFM/enrollment records from SQL Server using
+`Authentication=ActiveDirectoryInteractive` (browser sign-in, no database
+password). Settings in `.env` are `DB_SERVER`, `DB_DATABASE`, `DB_USERNAME`,
+and optionally `DB_DRIVER` and `DB_CONNECTION_TIMEOUT`. The server value is
+used as written. Nothing from the connection is printed. After those values
+are filled in, check the connection manually:
 
 ```powershell
 .\.venv\Scripts\python.exe -m database.check_connection

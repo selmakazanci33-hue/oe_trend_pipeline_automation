@@ -17,37 +17,36 @@ from database.models import DatabaseConfigurationError
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
 
-# Same default driver name used by the earlier Georgia Access SQL Server connection.
+# Same driver and interactive Entra login as the earlier Georgia Access connection.
 DEFAULT_DRIVER = "ODBC Driver 17 for SQL Server"
-DEFAULT_PORT = 1433
-DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_TIMEOUT_SECONDS = 300
+AUTH_MODE = "ActiveDirectoryInteractive"
 
-_REQUIRED = ("DB_SERVER", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD")
+_REQUIRED = ("DB_SERVER", "DB_DATABASE", "DB_USERNAME")
 
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    """Typed connection settings. ``password`` is omitted from ``repr``."""
+    """Typed connection settings. ``username`` is omitted from ``repr``."""
 
     server: str
     database: str
-    username: str
-    password: str = field(repr=False)
+    username: str = field(repr=False)
     driver: str
-    port: int
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
 
     def odbc_connection_string(self) -> str:
-        """ODBC string for pyodbc. Callers must not log the return value."""
-        server = self.server
-        if "," not in server and "\\" not in server:
-            server = f"{server},{self.port}"
+        """ODBC string for pyodbc. Callers must not log the return value.
+
+        Authentication is only ActiveDirectoryInteractive. There is no password
+        and no SQL-authentication fallback. ``server`` is copied unchanged.
+        """
         return (
             f"DRIVER={{{self.driver}}};"
-            f"SERVER={_odbc_value(server)};"
+            f"SERVER={_odbc_value(self.server)};"
             f"DATABASE={_odbc_value(self.database)};"
             f"UID={_odbc_value(self.username)};"
-            f"PWD={_odbc_value(self.password)};"
+            f"Authentication={AUTH_MODE};"
             "Encrypt=yes;"
             "TrustServerCertificate=yes;"
             f"Connection Timeout={self.timeout_seconds};"
@@ -85,9 +84,8 @@ def load_database_config(
         server=_text(source, "DB_SERVER"),
         database=_text(source, "DB_DATABASE"),
         username=_text(source, "DB_USERNAME"),
-        password=_text(source, "DB_PASSWORD"),
         driver=driver,
-        port=_port(source),
+        timeout_seconds=_timeout(source),
     )
 
 
@@ -98,17 +96,17 @@ def _text(source: Mapping[str, str | None], name: str) -> str:
     return str(raw).strip()
 
 
-def _port(source: Mapping[str, str | None]) -> int:
-    raw = _text(source, "DB_PORT")
+def _timeout(source: Mapping[str, str | None]) -> int:
+    raw = _text(source, "DB_CONNECTION_TIMEOUT")
     if not raw:
-        return DEFAULT_PORT
+        return DEFAULT_TIMEOUT_SECONDS
     try:
-        port = int(raw)
+        timeout = int(raw)
     except ValueError:
-        raise DatabaseConfigurationError("DB_PORT must be an integer") from None
-    if not 1 <= port <= 65535:
-        raise DatabaseConfigurationError("DB_PORT must be between 1 and 65535")
-    return port
+        raise DatabaseConfigurationError("DB_CONNECTION_TIMEOUT must be an integer") from None
+    if timeout < 1:
+        raise DatabaseConfigurationError("DB_CONNECTION_TIMEOUT must be a positive integer")
+    return timeout
 
 
 def _odbc_value(value: str) -> str:

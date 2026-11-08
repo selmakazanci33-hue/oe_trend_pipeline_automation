@@ -4,8 +4,9 @@ No pool. The previous Georgia Access SQL Server code used pyodbc as the
 driver (wrapped there by SQLAlchemy, which pools). This project does not use
 a pool, so connections are opened and closed directly.
 
-The connection string contains the password. It is never logged. Driver
-exceptions are rewritten before they leave this module.
+Authentication is ActiveDirectoryInteractive. The string contains UID and
+no password. It is never logged. Driver exceptions are rewritten before they
+leave this module; SQL error codes are kept.
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ from database.models import DatabaseConnectionError
 # A connector is ``connect(connection_string, timeout=seconds) -> raw connection``.
 Connector = Callable[..., object]
 
-_CONNECTION_MARKERS = re.compile(r"(?i)\b(PWD|PASSWORD|UID)\s*=")
-_DRIVER_MARKER = re.compile(r"(?i)\bDRIVER\s*=")
+_CREDENTIAL_ATTR = re.compile(
+    r"(?i)\b(PWD|PASSWORD|UID)\s*=\s*(?:\{(?:\}\}|[^}])*}|[^;]*)"
+)
+_FULL_ODBC_STRING = re.compile(r"(?i)\bDRIVER\s*=.*", re.DOTALL)
 
 
 class DatabaseConnection:
@@ -69,7 +72,7 @@ def database_connection(
 ) -> DatabaseConnection:
     """Open one connection. Pass ``connector`` only from tests."""
     connect = connector or _pyodbc_connect
-    redact = _redactor(config.password)
+    redact = _redactor(config.username)
     try:
         raw = connect(config.odbc_connection_string(), timeout=config.timeout_seconds)
     except Exception as exc:
@@ -90,24 +93,25 @@ def open_database(
 
 
 def sanitize_database_message(message: str, *secrets: str) -> str:
-    """Remove passwords and connection strings from a driver or log message."""
+    """Remove credentials and full ODBC strings. Keep surrounding error text."""
     redacted = message or ""
     for secret in secrets:
         if secret:
             redacted = redacted.replace(secret, "[REDACTED]")
-    if _CONNECTION_MARKERS.search(redacted) or _DRIVER_MARKER.search(redacted):
-        return "Database error. Connection details were omitted."
+    redacted = _CREDENTIAL_ATTR.sub(lambda match: f"{match.group(1).upper()}=[REDACTED]", redacted)
+    if re.search(r"(?i)\bDRIVER\s*=", redacted) and re.search(r"(?i)\bSERVER\s*=", redacted):
+        redacted = _FULL_ODBC_STRING.sub("Connection details were omitted.", redacted, count=1)
     return redacted or "Database error."
 
 
-def _redactor(password: str) -> Callable[[str], str]:
+def _redactor(username: str) -> Callable[[str], str]:
     def redact(message: str) -> str:
-        return sanitize_database_message(message, password)
+        return sanitize_database_message(message, username)
 
     return redact
 
 
-def _pyodbc_connect(connection_string: str, timeout: int = 30):
+def _pyodbc_connect(connection_string: str, timeout: int = 300):
     """Lazy import so unit tests never need a live ODBC driver."""
     import pyodbc
 

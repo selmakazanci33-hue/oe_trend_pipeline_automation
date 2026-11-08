@@ -4,9 +4,10 @@ Run manually, after ``.env`` is filled in, from the project directory::
 
     python -m database.check_connection
 
-This module is not imported by ``main.py``. It runs ``SELECT 1`` and prints
-only a pass/fail line plus, on failure, a sanitized reason. It never prints
-the password or the connection string.
+This module is not imported by ``main.py``. It runs ``SELECT 1``. Opening the
+connection uses ActiveDirectoryInteractive, so Entra may prompt in the browser.
+Output is a pass/fail line plus, on failure, a sanitized reason. It never
+prints the username or the connection string.
 """
 
 from __future__ import annotations
