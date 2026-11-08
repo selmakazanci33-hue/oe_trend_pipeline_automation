@@ -195,7 +195,35 @@ does not contact Sisense. It writes aggregate counts only:
 ```
 
 Plan year comes from `coverage_year`, not from a table name or a calendar year.
-The PY2026 vs PY2027 comparison is not built yet.
+
+The first Currently Enrolled People comparison is a separate command. It reads the
+verified Sisense payload locally, does not call Sisense, and does not open the
+database. It writes a comparison artifact and stops when the period is not proven:
+
+```powershell
+.\.venv\Scripts\python.exe -m comparison.currently_enrolled
+```
+
+The approved way to refresh the live PY2027 metric remains `main.py`. The
+comparison command does not run it.
+
+Lifecycle alignment is a separate command. It reads the stored Currently
+Enrolled People observation, shifts that UTC date back one calendar year, and
+catalogs PY2026 snapshots. It does not send JAQL and it does not run from
+`main.py`. A filename date is not treated as the as-of date.
+
+```powershell
+.\.venv\Scripts\python.exe -m comparison.lifecycle
+```
+
+A diagnostic people-count comparison is a separate command. It uses the stored
+PY2027 Currently Enrolled People observation and a filename-dated PY2026
+snapshot. It is not an official year-over-year metric. If no observation is
+stored, run `main.py` first.
+
+```powershell
+.\.venv\Scripts\python.exe -m comparison.diagnostic_numbers
+```
 
 ## Unit tests
 
