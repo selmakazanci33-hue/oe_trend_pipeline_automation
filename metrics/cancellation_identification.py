@@ -163,6 +163,12 @@ def safe_inventory_row(widget: WidgetDiscovery) -> dict[str, Any]:
                 "context_fields": [
                     {"table": field.table, "column": field.column} for field in role.context_fields
                 ],
+                "is_dashboard_filter": role.is_dashboard_filter,
+                "disabled": role.disabled,
+                "locked": role.locked,
+                "filter_kind": role.filter_kind,
+                "filter_fingerprint": role.filter_fingerprint,
+                "aggregation_functions": list(role.aggregation_functions),
             }
             for role in s.metadata_roles
         ],

@@ -11,9 +11,17 @@ from pathlib import Path
 
 from comparison.models import DIAGNOSTIC, NOT_COMPARABLE
 from database.comparison.activity_semantic_bridge import (
+    CONTRADICTED,
+    DASHBOARD_APPLIED,
+    DASHBOARD_IGNORED,
     DIAGNOSTIC_LABEL,
+    DIFFERENT_FIELD,
+    DRIFTING,
+    INSUFFICIENT,
+    NOT_AVAILABLE,
     NOT_SUPPORTED,
     PLUS_ONE_LABEL,
+    STABLE,
     SUPPORTED,
     UNRESOLVED,
     WIDGET_OWN,
@@ -21,13 +29,21 @@ from database.comparison.activity_semantic_bridge import (
     build_count_daily_sql,
     build_count_family_sql,
     build_coverage_year_sql,
+    build_lineage_agreement_sql,
     build_plus_one_sql,
+    build_policy_grain_sql,
     build_report,
+    build_scope_profile_sql,
     build_status_value_sql,
     cancelled_policies_checks,
     classify_activity_filters,
     collect_evidence,
+    daily_stability,
+    decide_count_operator,
     decide_coverage_year,
+    decide_daily_aggregation,
+    decide_event_date,
+    decide_lineage,
     duplicate_factor,
     evaluate_strategies,
     label_plus_one_pattern,
@@ -36,6 +52,7 @@ from database.comparison.activity_semantic_bridge import (
 )
 from database.models import QueryResult
 from database.query_runner import assert_read_only
+from sisense.discovery import filter_definition_fingerprint, widget_structure
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -90,6 +107,22 @@ class FakeClient:
         assert_read_only(sql)
         if "2027" in sql or (params and 2027 in params):
             raise AssertionError((sql, params))
+        if "COLUMN_NAME = 'last_update_timestamp'" in sql:
+            return result(("table_schema", "table_name", "data_type"), [])
+        if "AS family_enrollment_keys" in sql:
+            return result(
+                ("family_enrollment_keys", "family_rows", "keys_with_multiple_family_rows",
+                 "keys_with_rows_outside_family", "keys_with_multiple_status_values",
+                 "keys_with_multiple_event_dates", "keys_with_repeated_member_rows"),
+                [(Decimal("5"), Decimal("6"), Decimal("1"), Decimal("0"), Decimal("0"),
+                  Decimal("0"), None)],
+            )
+        if "AS scope_rows" in sql:
+            return result(
+                ("insurance_type_value", "scope_rows", "scope_policies",
+                 "benefit_year_matches", "benefit_non_null_rows"),
+                [(None, Decimal("6"), Decimal("5"), Decimal("6"), Decimal("6"))],
+            )
         if "LIKE 'Enrollments[_]PY2526%'" in sql:
             return result(("table_schema", "table_name", "table_type"), self.tables)
         if "ORDINAL_POSITION" in sql:
@@ -237,7 +270,208 @@ class SemanticBridgeTests(unittest.TestCase):
         report = build_report(collect_evidence(client))
         self.assertEqual(report["event_date_decision"]["decision"], UNRESOLVED)
         self.assertNotEqual(report["event_date_decision"]["decision"], SUPPORTED)
-        self.assertEqual(report["coverage_year"]["decision"], UNRESOLVED)
+        self.assertEqual(report["coverage_year"]["decision"], SUPPORTED)
+        self.assertEqual(report["lineage_probe"]["status"], NOT_AVAILABLE)
+        self.assertEqual(report["daily_aggregation_decision"]["decision"], UNRESOLVED)
+
+    def test_event_date_supported_only_from_behavior_evidence(self):
+        candidate = {"py2026_candidate": "enrollment_last_update_date", "sql_datatype": "date",
+                     "datetime_compatible": True}
+        grain = [{"status_family": "Cancelled", "family_enrollment_keys": 20059,
+                  "keys_with_multiple_event_dates": 0, "keys_with_multiple_family_rows": 6000}]
+        profiles = [{"field": "enrollment_last_update_date", "date_field_rows": 28188,
+                     "null_rate": 0.0, "date_field_distinct_dates": 120}]
+        plus = [{"slice": "ALL", "event_on_snapshot_plus_one": 3, "event_after_snapshot_plus_one": 0}]
+        lineage = {"status": NOT_AVAILABLE}
+        self.assertEqual(decide_event_date(candidate, grain, profiles, plus, lineage)["decision"], SUPPORTED)
+        multi = [{**grain[0], "keys_with_multiple_event_dates": 2}]
+        self.assertEqual(decide_event_date(candidate, multi, profiles, plus, lineage)["decision"], UNRESOLVED)
+        future = [{**plus[0], "event_after_snapshot_plus_one": 4}]
+        self.assertEqual(decide_event_date(candidate, grain, profiles, future, lineage)["decision"], UNRESOLVED)
+        sparse = [{**profiles[0], "date_field_distinct_dates": 3}]
+        self.assertEqual(decide_event_date(candidate, grain, sparse, plus, lineage)["decision"], UNRESOLVED)
+        self.assertEqual(decide_event_date(candidate, [], profiles, plus, lineage)["decision"], UNRESOLVED)
+        different = {"status": DIFFERENT_FIELD, "reason": "x"}
+        self.assertEqual(decide_event_date(candidate, grain, profiles, plus, different)["decision"], NOT_SUPPORTED)
+        shifted = {"status": CONTRADICTED, "reason": "x"}
+        self.assertEqual(decide_event_date(candidate, grain, profiles, plus, shifted)["decision"], SUPPORTED)
+
+    def test_count_operator_follows_sisense_function(self):
+        grain = [{"status_family": "Cancelled", "family_enrollment_keys": 20059,
+                  "keys_with_multiple_event_dates": 0, "keys_with_multiple_family_rows": 6000}]
+        unique = decide_count_operator(["count"], grain, "Cancelled")
+        self.assertEqual(unique["decision"], SUPPORTED)
+        self.assertEqual(unique["historical_operator"], "COUNT(DISTINCT enrollment_id)")
+        self.assertEqual(decide_count_operator(None, grain, "Cancelled")["decision"], UNRESOLVED)
+        self.assertEqual(decide_count_operator(["dupcount"], grain, "Cancelled")["decision"], UNRESOLVED)
+        single = [{**grain[0], "keys_with_multiple_family_rows": 0}]
+        self.assertEqual(decide_count_operator(["dupcount"], single, "Cancelled")["decision"], SUPPORTED)
+        ambiguous = [{**grain[0], "keys_with_multiple_event_dates": 1}]
+        self.assertEqual(decide_count_operator(["count"], ambiguous, "Cancelled")["decision"], UNRESOLVED)
+        self.assertEqual(decide_count_operator(["count"], grain, "Terminated")["decision"], UNRESOLVED)
+
+    def test_coverage_year_supported_by_benefit_year(self):
+        rows = [{"table": "Enrollments_PY2526_01312026", "observed_coverage_year": 2026}]
+        supported = decide_coverage_year(rows, [{"benefit_year_matches": 995, "benefit_non_null_rows": 1000}])
+        self.assertEqual(supported["decision"], SUPPORTED)
+        weak = decide_coverage_year(rows, [{"benefit_year_matches": 800, "benefit_non_null_rows": 1000}])
+        self.assertEqual(weak["decision"], UNRESOLVED)
+
+    def test_daily_stability_detects_stable_and_drifting(self):
+        def day_rows(table, values):
+            return [
+                {"table": table, "status_family": "Cancelled", "grain": "day",
+                 "event_calendar_date": f"2026-01-{day:02d}", "count_distinct_enrollment_keys": value}
+                for day, value in values.items()
+            ]
+        early = {day: 100 for day in range(1, 31)}
+        dates = {"Enrollments_PY2526_01312026": "2026-01-31", "Enrollments_PY2526_02272026": "2026-02-27"}
+        stable = daily_stability(
+            day_rows("Enrollments_PY2526_01312026", early)
+            + day_rows("Enrollments_PY2526_02272026", {day: 99 for day in early}), dates)
+        self.assertEqual(stable["families"]["Cancelled"]["status"], STABLE)
+        self.assertEqual(stable["families"]["Terminated"]["status"], INSUFFICIENT)
+        drifting = daily_stability(
+            day_rows("Enrollments_PY2526_01312026", early)
+            + day_rows("Enrollments_PY2526_02272026", {day: 80 for day in early}), dates)
+        self.assertEqual(drifting["families"]["Cancelled"]["status"], DRIFTING)
+        strategy = evaluate_strategies([], [], {"decision": SUPPORTED}, stable, "Cancelled")
+        self.assertEqual(strategy[0]["decision"], SUPPORTED)
+        self.assertEqual(strategy[-1]["activated_strategy"], "A")
+        blocked = evaluate_strategies([], [], {"decision": SUPPORTED}, drifting, "Cancelled")
+        self.assertEqual(blocked[0]["decision"], UNRESOLVED)
+
+    def test_lineage_and_daily_boundary(self):
+        self.assertEqual(decide_lineage([])["status"], NOT_AVAILABLE)
+        agree = decide_lineage([{"live_table": "enrollment", "matched_keys": 5000, "same_date": 4000,
+                                 "live_plus_one": 2, "live_minus_one": 0, "live_later": 998,
+                                 "live_earlier": 0}])
+        self.assertEqual(agree["status"], SUPPORTED)
+        shifted = decide_lineage([{"live_table": "enrollment", "matched_keys": 5000, "same_date": 3000,
+                                   "live_plus_one": 1000, "live_minus_one": 0, "live_later": 1000,
+                                   "live_earlier": 0}])
+        self.assertEqual(shifted["status"], CONTRADICTED)
+        unrelated = decide_lineage([{"live_table": "enrollment", "matched_keys": 5000, "same_date": 100,
+                                     "live_plus_one": 0, "live_minus_one": 0, "live_later": 900,
+                                     "live_earlier": 4000}])
+        self.assertEqual(unrelated["status"], DIFFERENT_FIELD)
+        filters = {"date_dimension": {"verified": True}}
+        candidate = {"datetime_compatible": True}
+        self.assertEqual(decide_daily_aggregation(filters, candidate, agree)["decision"], SUPPORTED)
+        self.assertEqual(decide_daily_aggregation(filters, candidate, shifted)["decision"], NOT_SUPPORTED)
+        self.assertEqual(decide_daily_aggregation(filters, candidate, {"status": NOT_AVAILABLE})["decision"],
+                         UNRESOLVED)
+        self.assertEqual(decide_daily_aggregation({}, candidate, agree)["decision"], UNRESOLVED)
+
+    def test_new_sql_is_read_only_and_py2026_only(self):
+        columns = {**columns_meta(),
+                   "enrollee_id": {"name": "enrollee_id", "data_type": "bigint"},
+                   "insurance_type_description": {"name": "insurance_type_description", "data_type": "varchar"},
+                   "benefit_effective_date": {"name": "benefit_effective_date", "data_type": "date"}}
+        qualified = "[dbo].[Enrollments_PY2526_01312026]"
+        grain_sql, grain_params = build_policy_grain_sql(
+            qualified, columns, "enrollment_last_update_date", "date", cancelled=True)
+        self.assertEqual(grain_params, ("Cancelled", 2026, "Cancelled"))
+        self.assertIn("COUNT(DISTINCT [enrollee_id])", grain_sql)
+        scope_sql, scope_params = build_scope_profile_sql(qualified, columns, cancelled=False)
+        self.assertIn("GROUP BY [insurance_type_description]", scope_sql)
+        self.assertEqual(scope_params, (2026, 2026, "Term%"))
+        daily_sql, daily_params = build_count_daily_sql(
+            qualified, columns, "enrollment_last_update_date", "date", cancelled=True, apply_health=True)
+        self.assertIn("[insurance_type_description] = ?", daily_sql)
+        self.assertEqual(daily_params[-1], "Health")
+        live = {"enrollment_id": {"name": "enrollment_id"},
+                "last_update_timestamp": {"name": "last_update_timestamp"},
+                "coverage_year": {"name": "coverage_year"}}
+        lineage_sql, lineage_params = build_lineage_agreement_sql(
+            "[dbo].[enrollment]", live, qualified, columns, "enrollment_last_update_date", "date")
+        for sql, params in ((grain_sql, grain_params), (scope_sql, scope_params),
+                            (lineage_sql, lineage_params)):
+            assert_read_only(sql)
+            self.assertNotIn("UNION", sql.upper())
+            self.assertNotIn(2027, params)
+            self.assertNotIn("2027", sql)
+
+    def test_activity_widget_filters_from_captured_flags(self):
+        year = filter_definition_fingerprint({"explicit": True, "multiSelection": True, "members": ["2027"]})
+        health = filter_definition_fingerprint({"explicit": True, "multiSelection": True, "members": ["Health"]})
+        columns = {**columns_meta(),
+                   "insurance_type_description": {"name": "insurance_type_description", "data_type": "varchar"}}
+
+        def discovery(scope):
+            return {"widget_inventory": [{
+                "widget_id": "w1",
+                "widget_title": WIDGET_TITLE,
+                "measure_titles": ["Cancelled Policies", "Terminated Policies"],
+                "metadata_roles": [
+                    {"panel": "result", "kind": "dimension", "table": "enrollment",
+                     "column": "last_update_timestamp", "date_level": "days"},
+                    {"panel": "result", "kind": "measure", "title": "Cancelled Policies",
+                     "aggregation_functions": ["count"]},
+                    {"panel": "result", "kind": "measure", "title": "Terminated Policies",
+                     "aggregation_functions": ["count"]},
+                ] + scope,
+            }]}
+
+        year_role = {"panel": "scope", "kind": "filter", "table": "ssap_applications",
+                     "column": "coverage_year", "is_dashboard_filter": True, "disabled": False,
+                     "filter_kind": "members", "filter_fingerprint": year}
+        ignored = classify_activity_filters(discovery([year_role]), columns)
+        self.assertEqual(ignored["decision"], SUPPORTED)
+        self.assertEqual(ignored["historical_predicates"], ["coverage_year = 2026"])
+        self.assertFalse(ignored["apply_insurance_health"])
+        self.assertTrue(ignored["date_dimension"]["verified"])
+        self.assertEqual(ignored["measure_aggregation_functions"]["Cancelled"], ["count"])
+        by_field = {item["sisense_field"]: item for item in ignored["inventory"] if "mapping_status" in item}
+        self.assertEqual(by_field["ssap_applications.coverage_year"]["classification"], DASHBOARD_APPLIED)
+        self.assertEqual(by_field["enrollment.insurance_type_description"]["classification"], DASHBOARD_IGNORED)
+
+        health_role = {"panel": "scope", "kind": "filter", "table": "enrollment",
+                       "column": "insurance_type_description", "is_dashboard_filter": True,
+                       "disabled": False, "filter_kind": "members", "filter_fingerprint": health}
+        applied = classify_activity_filters(discovery([year_role, health_role]), columns)
+        self.assertEqual(applied["decision"], SUPPORTED)
+        self.assertTrue(applied["apply_insurance_health"])
+
+        other = {**health_role, "filter_fingerprint": "sha256:different"}
+        self.assertEqual(classify_activity_filters(discovery([year_role, other]), columns)["decision"], UNRESOLVED)
+        own = {"panel": "scope", "kind": "filter", "table": "enrollment", "column": "hios_issuer_id",
+               "is_dashboard_filter": False, "disabled": False, "filter_kind": "members",
+               "filter_fingerprint": "sha256:x"}
+        self.assertEqual(classify_activity_filters(discovery([year_role, own]), columns)["decision"], UNRESOLVED)
+        disabled = {**own, "disabled": True}
+        self.assertEqual(classify_activity_filters(discovery([year_role, disabled]), columns)["decision"], SUPPORTED)
+        no_year = classify_activity_filters(discovery([]), columns)
+        self.assertEqual(no_year["decision"], UNRESOLVED)
+        legacy = {key: value for key, value in year_role.items() if key != "is_dashboard_filter"}
+        self.assertEqual(classify_activity_filters(discovery([legacy]), columns)["decision"], UNRESOLVED)
+
+    def test_discovery_captures_filter_flags_without_member_values(self):
+        structure = widget_structure({
+            "dashboard": "d1;PY 2027 - OE Executive Dashboard",
+            "widget": f"w1;{WIDGET_TITLE}",
+            "datasource": {"id": "localhost_aMAIN", "title": "MAIN"},
+            "metadata": [
+                {"jaql": {"table": "enrollment", "column": "last_update_timestamp",
+                          "datatype": "datetime", "level": "days", "title": "Days"}},
+                {"jaql": {"type": "measure", "formula": "Count([A1]) ", "title": "Cancelled Policies",
+                          "context": {"[A1]": {"table": "enrollment", "column": "id"}}}},
+                {"jaql": {"table": "ssap_applications", "column": "coverage_year",
+                          "isDashboardFilter": True,
+                          "filter": {"explicit": True, "multiSelection": True, "members": ["2027"]}},
+                 "panel": "scope", "disabled": False, "locked": True},
+            ],
+        })
+        scope = [role for role in structure.metadata_roles if role.panel == "scope"][0]
+        measure = [role for role in structure.metadata_roles if role.kind == "measure"][0]
+        self.assertTrue(scope.is_dashboard_filter)
+        self.assertFalse(scope.disabled)
+        self.assertTrue(scope.locked)
+        self.assertEqual(scope.filter_kind, "members")
+        self.assertEqual(scope.filter_fingerprint, filter_definition_fingerprint(
+            {"members": ["2027"], "multiSelection": True, "explicit": True}))
+        self.assertNotIn("2027", scope.filter_fingerprint)
+        self.assertEqual(measure.aggregation_functions, ("count",))
 
     def test_term_values_are_all_listed(self):
         client = FakeClient()
@@ -265,12 +499,29 @@ class SemanticBridgeTests(unittest.TestCase):
             status_observed=True, event_decision=SUPPORTED,
             coverage_decision=SUPPORTED, filter_decision=SUPPORTED,
             strategy_decision=SUPPORTED, term_values=["Terminated"],
+            count_decision=SUPPORTED, daily_decision=SUPPORTED,
         )
-        for item in passing:
-            if item["check"] == "daily_aggregation_semantics":
-                item["status"] = "PASS"
         comparable = metric_from_checks("cancelled_policies_daily", "Cancelled Policies", passing)
         self.assertEqual(comparable["comparison_status"], "COMPARABLE")
+        no_count = cancelled_policies_checks(
+            identifier_present=True, count_ready=True, count_factor=1,
+            status_observed=True, event_decision=SUPPORTED,
+            coverage_decision=SUPPORTED, filter_decision=SUPPORTED,
+            strategy_decision=SUPPORTED, term_values=["Terminated"], daily_decision=SUPPORTED,
+        )
+        self.assertEqual(
+            metric_from_checks("cancelled_policies_daily", "Cancelled Policies", no_count)["comparison_status"],
+            DIAGNOSTIC)
+        boundary = cancelled_policies_checks(
+            identifier_present=True, count_ready=True, count_factor=1,
+            status_observed=True, event_decision=SUPPORTED,
+            coverage_decision=SUPPORTED, filter_decision=SUPPORTED,
+            strategy_decision=SUPPORTED, term_values=["Terminated"],
+            count_decision=SUPPORTED, daily_decision=NOT_SUPPORTED,
+        )
+        self.assertEqual(
+            metric_from_checks("cancelled_policies_daily", "Cancelled Policies", boundary)["comparison_status"],
+            NOT_COMPARABLE)
         missing = cancelled_policies_checks(
             identifier_present=False, count_ready=False, status_observed=False,
             event_decision=NOT_SUPPORTED, coverage_decision=NOT_SUPPORTED,

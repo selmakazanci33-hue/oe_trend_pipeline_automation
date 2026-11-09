@@ -307,6 +307,18 @@ not union snapshots, and does not assign COMPARABLE unless every check PASS.
 .\.venv\Scripts\python.exe -m database.comparison.activity_semantic_bridge
 ```
 
+The count operator follows the captured Sisense function: `COUNT()` is a unique
+count, so the historical policy count is `COUNT(DISTINCT enrollment_id)` per
+event date. Widget filters are classified from the captured `isDashboardFilter`
+and `disabled` flags; re-run discovery if the artifact predates them. Later
+snapshots are compared day by day to decide whether one late snapshot
+reproduces earlier daily counts. `--existing` re-reads the last bridge report
+without connecting to the database or Sisense.
+
+```powershell
+.\.venv\Scripts\python.exe -m database.comparison.activity_semantic_bridge --existing
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the

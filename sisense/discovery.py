@@ -14,7 +14,10 @@ Nothing here sends a request.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
@@ -88,7 +91,12 @@ class Column:
 
 @dataclass(frozen=True)
 class MetadataRole:
-    """Safe role of one metadata item. No filter members and no formula text."""
+    """Safe role of one metadata item. No filter members and no formula text.
+
+    ``filter_fingerprint`` is a one-way hash of the filter definition so it can be
+    compared with the verified payload without persisting member values.
+    ``aggregation_functions`` are formula function names only (e.g. ``count``).
+    """
 
     panel: str
     kind: str
@@ -99,6 +107,12 @@ class MetadataRole:
     table: str | None = None
     column: str | None = None
     context_fields: tuple[FieldIdentity, ...] = ()
+    is_dashboard_filter: bool | None = None
+    disabled: bool | None = None
+    locked: bool | None = None
+    filter_kind: str | None = None
+    filter_fingerprint: str | None = None
+    aggregation_functions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,6 +184,60 @@ def _context_fields(jaql: Mapping[str, Any]) -> tuple[FieldIdentity, ...]:
     return tuple(sorted(found, key=lambda item: (item.table or "", item.column or "")))
 
 
+_FUNCTION_NAME = re.compile(r"([A-Za-z]+)\s*\(")
+
+
+def aggregation_functions(jaql: Mapping[str, Any]) -> tuple[str, ...]:
+    """Lower-case formula function names, or ``jaql.agg``. Literals are not returned."""
+    names: list[str] = []
+    formula = jaql.get("formula")
+    if isinstance(formula, str):
+        for name in _FUNCTION_NAME.findall(formula):
+            if name.lower() not in names:
+                names.append(name.lower())
+    agg = _text(jaql.get("agg"))
+    if agg is not None and agg.lower() not in names:
+        names.append(agg.lower())
+    return tuple(names)
+
+
+def filter_kind(filter_value: Any) -> str | None:
+    if not isinstance(filter_value, Mapping):
+        return None
+    if filter_value.get("all") is True:
+        return "all"
+    if isinstance(filter_value.get("members"), list):
+        return "members"
+    if "startsWith" in filter_value:
+        return "startsWith"
+    if "from" in filter_value or "to" in filter_value:
+        return "range"
+    if isinstance(filter_value.get("exclude"), Mapping):
+        return "exclude"
+    return "other"
+
+
+def filter_definition_fingerprint(filter_value: Any) -> str | None:
+    """SHA-256 of the canonical filter definition. Member order is ignored."""
+    if not isinstance(filter_value, Mapping):
+        return None
+
+    def canonical(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {str(key): canonical(item) for key, item in value.items()}
+        if isinstance(value, list):
+            items = [canonical(item) for item in value]
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+        return value
+
+    material = json.dumps(canonical(filter_value), sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
 def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | None:
     if not isinstance(payload, Mapping):
         return None
@@ -197,6 +265,11 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
             dashboard_filters += jaql.get("isDashboardFilter") is True
             roles.append(MetadataRole(
                 "scope", "filter", jaql_type, title, level, column_title, table, column_name, context_fields,
+                is_dashboard_filter=_optional_bool(jaql.get("isDashboardFilter")),
+                disabled=_optional_bool(item.get("disabled")),
+                locked=_optional_bool(item.get("locked")),
+                filter_kind=filter_kind(jaql.get("filter")),
+                filter_fingerprint=filter_definition_fingerprint(jaql.get("filter")),
             ))
             continue
         kind = "measure" if jaql.get("type") == "measure" or "formula" in jaql else "dimension"
@@ -204,6 +277,8 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
         columns.append(Column(title, kind, datatype, level, table, column_name, column_title, context_fields))
         roles.append(MetadataRole(
             "result", kind, jaql_type, title, level, column_title, table, column_name, context_fields,
+            disabled=_optional_bool(item.get("disabled")),
+            aggregation_functions=aggregation_functions(jaql) if kind == "measure" else (),
         ))
     datasource = payload.get("datasource") if isinstance(payload.get("datasource"), Mapping) else {}
     widget_type = payload.get("widgetType")
