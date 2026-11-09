@@ -25,7 +25,8 @@ FRESHNESS_LABELS = {
 }
 STATUS_LABELS = {
     ex.COMPARABLE: "Comparable",
-    ex.DIAGNOSTIC: "Indicative comparison",
+    ex.DIAGNOSTIC: "Definition alignment in progress",
+    ex.ALIGNMENT: "Definition alignment in progress",
     ex.PY2027_ONLY: "PY2027 only",
     ex.PY2026_ONLY: "PY2026 only",
     ex.NOT_COMPARABLE: "Different definitions — shown separately",
@@ -36,13 +37,14 @@ STATUS_LABELS = {
 }
 COMPARISON_SHORT = {
     ex.COMPARABLE: "Comparable",
-    ex.DIAGNOSTIC: "Indicative",
+    ex.DIAGNOSTIC: "Definition alignment in progress",
+    ex.ALIGNMENT: "Definition alignment in progress",
     ex.PY2026_ONLY: "PY2026 only",
     ex.PY2027_ONLY: "PY2027 only",
     ex.NOT_COMPARABLE: "Different definitions",
 }
 PY2026_COLOR, PY2027_COLOR = "#94a3b8", "#2563eb"
-CE_FOOTNOTE = "Shown for context only; definitions are not fully aligned."
+CE_FOOTNOTE = ex.CE_FOOTNOTE_EXECUTIVE
 NAP_TITLE = "PY2027 Enrollment Mix"
 NAP_FOOTNOTE = "Dashboard lifecycle categories; historical PY2026 equivalents are not currently available."
 TECHNICAL_ID = "technical"
@@ -155,8 +157,19 @@ def _selector(chart_id: str, metrics: dict, default: str | None) -> str:
     return f"<div class='selector' data-chart='{chart_id}'>{''.join(buttons)}</div>"
 
 
+def _year_panel(chart_id: str, key: str, item: dict, svg: str, extra_notes: list[str], default: str | None) -> str:
+    title = ex.year_chart_title(item.get("chart_base") or item["label"], item["mode"])
+    notes = [n for n in (ex.year_chart_note(item["mode"]), *extra_notes) if n]
+    hidden = "" if key == default else " hidden"
+    yoy = " data-yoy='1'" if item["mode"] == ex.MODE_YOY else ""
+    sub = "YoY Comparison" if item["mode"] == ex.MODE_YOY else status_pill(item["comparison_status"])
+    return (f"<div class='panel' data-metric='{key}' data-mode='{item['mode']}'{yoy}{hidden}>"
+            f"<h4>{_e(title)}</h4><div class='sub'>{sub}</div>{svg}"
+            f"<p class='muted'>{' '.join(_e(n) for n in notes)}</p></div>")
+
+
 def monthly_chart(report: dict) -> str:
-    title = "Monthly Enrollment Comparison — PY2026 vs PY2027"
+    title = "Monthly Enrollment"
     monthly = report["monthly_yoy"]
     if monthly["default"] is None:
         return _note_card(title, "Monthly data is not available for this report.")
@@ -168,25 +181,18 @@ def monthly_chart(report: dict) -> str:
         if not item["selector_enabled"]:
             continue
         series = []
-        if any(v is not None for v in item["py2026"]):
+        if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2026) and any(v is not None for v in item["py2026"]):
             series.append(("PY2026", PY2026_COLOR, dict(zip(monthly["months"], item["py2026"]))))
-        if any(v is not None for v in item["py2027"]):
+        if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2027) and any(v is not None for v in item["py2027"]):
             series.append(("PY2027", PY2027_COLOR, dict(zip(monthly["months"], item["py2027"]))))
         svg = ex.grouped_vbar_svg(monthly["months"], series, labels=labels)
-        notes = []
-        if not item["yoy_enabled"]:
-            missing = "PY2027" if item["mode"] == ex.MODE_PY2026 else "PY2026"
-            notes.append(f"{missing}: comparable definition not available yet — shown for one year only.")
-        notes.append(_e(item["definition"]))
-        hidden = "" if key == monthly["default"] else " hidden"
-        panels.append(f"<div class='panel' data-metric='{key}'{hidden}><div class='sub'>{status_pill(item['comparison_status'])}</div>"
-                      f"{svg}<p class='muted'>{' '.join(notes)}</p></div>")
+        panels.append(_year_panel("monthly", key, item, svg, [item["definition"]], monthly["default"]))
     mtd = ""
     if current:
         through = friendly_time(f"{current['through']}T00:00:00+00:00") or current["through"]
         through_day = through.split(",")[0]
         mtd = (f"<div class='mtd'><b>* {_e(current['month'])}</b>: PY2027 is month to date (through {_e(through_day)}). "
-               f"PY2026 {_e(current['month'])} bars show the <b>PY2026 Full Month</b> for context only; no "
+               f"PY2026 {_e(current['month'])} bars, when shown, are the <b>PY2026 Full Month</b> for context only; no "
                f"change is calculated between a full month and a partial month.<br>"
                f"Same-period comparison through {_e(through_day)}: <b>{_e(current['message'])}</b>.</div>")
     body = (_selector("monthly", monthly["metrics"], monthly["default"])
@@ -196,7 +202,7 @@ def monthly_chart(report: dict) -> str:
 
 
 def daily_chart(report: dict) -> str:
-    title = "Daily Enrollment Comparison — PY2026 vs PY2027"
+    title = "Daily Enrollment"
     daily = report["daily_yoy"]
     if daily["default"] is None:
         return _note_card(title, "Daily series not available for this run.")
@@ -207,20 +213,17 @@ def daily_chart(report: dict) -> str:
         cats = item["categories"]
         labels = {c: ex.day_label(c) for c in cats} if item["calendar"] else {}
         series = []
-        if any(v is not None for v in item["py2026"]):
+        if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2026) and any(v is not None for v in item["py2026"]):
             series.append(("PY2026", PY2026_COLOR, dict(zip(cats, item["py2026"]))))
-        series.append(("PY2027", PY2027_COLOR, dict(zip(cats, item["py2027"]))))
+        if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2027) and any(v is not None for v in item["py2027"]):
+            series.append(("PY2027", PY2027_COLOR, dict(zip(cats, item["py2027"]))))
         svg = ex.line_svg(cats, series, labels)
-        notes = []
-        if item["note"]:
-            notes.append(item["note"])
+        extra = []
         if not item["calendar"]:
-            notes.append("Shown in observed order; calendar dates were not available.")
+            extra.append("Shown in observed order; calendar dates were not available.")
         if key in ("cancelled", "terminated"):
-            notes.append("Daily dashboard activity; not compared with PY2026 status counts.")
-        hidden = "" if key == daily["default"] else " hidden"
-        panels.append(f"<div class='panel' data-metric='{key}'{hidden}><div class='sub'>{status_pill(item['comparison_status'])}</div>"
-                      f"{svg}<p class='muted'>{_e(' '.join(notes))}</p></div>")
+            extra.append("Daily dashboard activity; not compared with PY2026 status counts.")
+        panels.append(_year_panel("daily", key, item, svg, extra, daily["default"]))
     body = _selector("daily", daily["metrics"], daily["default"]) + f"<div id='daily'>{''.join(panels)}</div>"
     return _card(title, body, extra_class="major")
 
@@ -236,7 +239,7 @@ def trend_chart(report: dict) -> str:
     if trend["py2026_available"]:
         series.append(("PY2026 (same date last year)", PY2026_COLOR, {r["py2027_date"]: r["py2026_value"] for r in rows}))
     latest = FRESHNESS_LABELS.get(rows[-1]["py2027_freshness"], "Not available")
-    note = "" if trend["py2026_available"] else " PY2026 history for the same dates is not available."
+    note = "" if trend["py2026_available"] else f" {ex.PY2026_PENDING}"
     body = (ex.line_svg(cats, series, {d: ex.day_label(d) for d in cats})
             + f"<p class='muted'>Latest point: {_e(latest)}.{_e(note)} The trend grows with each successful run.</p>")
     return _card(title, body, subtitle="PY2027 trend")
@@ -264,24 +267,17 @@ def activity_chart(report: dict) -> str:
 def ce_chart(report: dict) -> str:
     range_ = report["currently_enrolled_range"]
     py27 = next(k for k in report["kpis"] if k["metric_id"] == ex.CE)
-    title = "Currently Enrolled — PY2026 vs PY2027"
+    title = ex.CE_YOY_TITLE
     if range_["low"] is None and py27["value"] is None:
         return _note_card(title, "Currently Enrolled is not available for this report.")
-    items = []
-    if range_["high"] is not None:
-        items.append(("PY2026 (high estimate)", range_["high"], PY2026_COLOR))
-        items.append(("PY2026 (low estimate)", range_["low"], PY2026_COLOR))
-    if py27["value"] is not None:
-        items.append(("PY2027", py27["value"], PY2027_COLOR))
     rng = "—" if range_["low"] is None else f"{ex.fmt(range_['low'])} → {ex.fmt(range_['high'])}"
-    lines = [f"<div class='pair'><div><div class='k'>PY2026 estimated diagnostic range</div><div class='v2'>{_e(rng)}</div></div>"
-             f"<div><div class='k'>PY2027</div><div class='v2'>{_e(ex.fmt(py27['value']))}</div>"
-             f"<div class='m'>{freshness_note(py27, report['executive_summary']['data_refreshed'])}</div></div></div>"]
-    closest = report.get("closest_scenario")
-    if closest is not None:
-        lines.append(f"<p>Closest available PY2026 scenario: <b>{_e(ex.fmt(closest['py2026_value']))}</b><sup>†</sup></p>")
-    body = "".join(lines) + ex.hbar_svg(items) + f"<p class='muted'>† {_e(CE_FOOTNOTE)}</p>"
-    return _card(title, body, subtitle="Indicative comparison")
+    body = (f"<div class='pair'><div><div class='k'>PY2026 database scenarios</div>"
+            f"<div class='v2'>{_e(rng)}</div><div class='m'>Exact database count</div></div>"
+            f"<div><div class='k'>PY2027 dashboard</div><div class='v2'>{_e(ex.fmt(py27['value']))}</div>"
+            f"<div class='m'>{freshness_note(py27, report['executive_summary']['data_refreshed'])}</div>"
+            f"<div class='m'>Dashboard count</div></div></div>"
+            f"<p class='muted'>{_e(CE_FOOTNOTE)}</p>")
+    return _card(title, body, subtitle=ex.CE_ALIGNMENT_SUBTITLE)
 
 
 def same_date_table(report: dict) -> str:
@@ -292,17 +288,16 @@ def same_date_table(report: dict) -> str:
     for row in report["same_date_table"]:
         item = metrics.get(row["metric"])
         note = f"<div class='m'>{freshness_note(item, now)}</div>" if item else ""
-        diff = row["difference"].split(" (")[0] if row["difference"] != ex.DASH else ex.DASH
         body += (f"<tr><td>{_e(row['metric'])}</td><td>{_e(row['py2026'])}</td><td>{_e(row['py2027'])}{note}</td>"
-                 f"<td>{_e(diff)}</td><td>{_e(COMPARISON_SHORT.get(row['status'], row['status']))}</td></tr>")
+                 f"<td>{_e(row['difference'])}</td><td>{_e(COMPARISON_SHORT.get(row['status'], row['status']))}</td></tr>")
     return _card("Same-Date Comparison", f"<table class='grid'>{head}{body}</table>"
-                 "<p class='muted'>Currently Enrolled difference uses the closest available PY2026 scenario, "
-                 "for context only.</p>")
+                 f"<p class='muted'>{_e(ex.CE_ALIGNMENT_SUBTITLE)}. Difference is blank until a PY2026 definition "
+                 "is confirmed as equivalent to the dashboard metric.</p>")
 
 
 def status_population(report: dict) -> str:
     data = report["py2026_status_population_chart"]
-    title = "PY2026 Latest-State Enrollment Status"
+    title = ex.STATUS_POP_TITLE
     main = [b for b in data["bars"] if b["status"] in ex.STATUS_ORDER and b["distinct_people"] is not None]
     other = [b for b in data["bars"] if b["status"] not in ex.STATUS_ORDER and b["distinct_people"] is not None]
     if not main:
@@ -312,8 +307,9 @@ def status_population(report: dict) -> str:
     if other:
         body += ("<p class='muted'>Other / pending states: "
                  + ", ".join(f"{_e(b['status'])} {_e(ex.fmt(b['distinct_people']))}" for b in other) + "</p>")
-    body += f"<p class='muted'>Distinct people. {_e(ex.PY2027_STATUS_POP_UNAVAILABLE)}</p>"
-    return _card(title, body, subtitle=status_pill(ex.PY2026_ONLY))
+    body += (f"<p class='muted'>Exact database count for the stated latest-state definition. "
+             f"{_e(ex.PY2027_STATUS_POP_UNAVAILABLE)}</p>")
+    return _card(title, body, subtitle=_e(ex.STATUS_POP_SUBTITLE))
 
 
 def nap_chart(report: dict) -> str:
@@ -452,7 +448,8 @@ def technical_details(report: dict) -> str:
     return (f"<details id='{TECHNICAL_ID}' class='tech'><summary>Technical details</summary>"
             "<h4>PY2027 metric provenance</h4><table class='grid'><tr><th>Metric</th><th>Freshness</th>"
             f"<th>Retrieved (UTC)</th><th>Source</th><th>Verification</th></tr>{rows}</table>"
-            f"<h4>PY2026 Currently Enrolled scenarios (CE1–CE4)</h4><ul>{scenarios or '<li>None</li>'}</ul>"
+            f"<h4>PY2026 Currently Enrolled scenarios (CE1–CE4)</h4><p>{_e(ex.CE_TECHNICAL_NOTE)}</p>"
+            f"<ul>{scenarios or '<li>None</li>'}</ul>"
             f"<p>production_comparable = {_e(report['production_comparable'])}</p>"
             f"<h4>Caveats</h4><ul>{''.join(f'<li>{_e(c)}</li>' for c in report['caveats'])}</ul>"
             f"<h4>Report data (JSON)</h4><pre>{_e(dump)}</pre></details>")
@@ -473,6 +470,7 @@ CSS = (
     ".v2{font-size:22px;font-weight:700;margin:2px 0}.m{font-size:11px;color:#64748b}"
     ".card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px 20px;margin-bottom:16px}"
     ".card h3{margin:0 0 4px;font-size:16px}.card.major h3{font-size:18px}.card.empty{background:#f8fafc}"
+    ".panel h4{margin:0 0 4px;font-size:15px}"
     ".sub{font-size:12px;color:#475569;margin-bottom:8px}.muted{color:#64748b;font-size:12px}"
     ".pill{display:inline-block;padding:1px 9px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:11px;"
     "font-weight:600}.fresh{color:#166534}.fresh.na{color:#64748b}.fresh.old{color:#b45309;font-weight:600}"

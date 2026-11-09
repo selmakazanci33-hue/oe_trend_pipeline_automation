@@ -90,19 +90,28 @@ def test_header_is_simple_and_iso_free(tmp_path):
 
 # --- monthly -------------------------------------------------------------------------------
 
-def test_monthly_supports_two_plan_year_series(tmp_path):
+def test_monthly_supports_two_plan_year_series(tmp_path, monkeypatch):
     monthly = report_for(tmp_path)["monthly_yoy"]
     assert monthly["months"][:4] == ["Oct", "Nov", "Dec", "Jan"]
     assert monthly["py2026_months"][0] == "2025-10" and monthly["py2027_months"][0] == "2026-10"
     created = monthly["metrics"]["created"]
     assert created["py2026"][0] == 900000 and created["py2026"][1] == 100000
+    assert created["mode"] == ex.MODE_PY2026 and created["rows"][0]["comparable"] is False
+    monkeypatch.setattr(ex, "COMPATIBLE_PY2027_ACTIVITY_METRICS", frozenset({"created"}))
     (tmp_path / "pair").mkdir()
     model = live_model(tmp_path / "pair")
-    model["py2026"]["report"]["historical_population_series"] = [{"date": "2025-11-05", "distinct_people": 760000}]
-    enrolled = ex.build_report(model)["monthly_yoy"]["metrics"]["enrolled"]
-    assert enrolled["mode"] == ex.MODE_YOY and enrolled["py2026"][1] == 760000 and enrolled["py2027"][1] == 950000
-    chart = eh.monthly_chart(ex.build_report(model))
-    assert ">PY2026<" in chart and ">PY2027<" in chart
+    model["py2027"]["activity_series"] = {"created": {"points": []}}
+    model["py2027"]["activity_monthly"] = {"created": {"2026-10": {"value": 880000}, "2026-11": {"value": 120000}}}
+    report = ex.build_report(model)
+    combined = report["monthly_yoy"]["metrics"]["created"]
+    assert combined["mode"] == ex.MODE_YOY and combined["yoy_enabled"] is True
+    assert combined["py2026"][0] == 900000 and combined["py2027"][0] == 880000
+    assert combined["rows"][0]["comparable"] is True and combined["rows"][1]["comparable"] is False
+    chart = eh.monthly_chart(report)
+    panel = [p for p in chart.split("<div class='panel'") if "data-metric='created'" in p][0]
+    assert "Monthly Enrollment Created — PY2026 vs PY2027" in panel
+    assert panel.count("<svg") == 1 and ">PY2026<" in panel and ">PY2027<" in panel
+    assert "data-yoy='1'" in panel
 
 
 def test_future_py2027_months_are_null_never_zero(tmp_path):
@@ -110,6 +119,7 @@ def test_future_py2027_months_are_null_never_zero(tmp_path):
     for item in monthly["metrics"].values():
         assert item["py2027"][2:] == [None] * 10
     enrolled = monthly["metrics"]["enrolled"]
+    assert enrolled["mode"] == ex.MODE_PY2027
     assert enrolled["py2027"][0] == 800000 and enrolled["py2027"][1] == 950000
     assert enrolled["py2027_period"][:3] == [ex.FULL_MONTH, ex.MONTH_TO_DATE, None]
 
@@ -118,12 +128,15 @@ def test_partial_month_never_compared_to_full_month(tmp_path):
     model = live_model(tmp_path)
     model["py2026"]["report"]["historical_population_series"] = [{"date": "2025-11-30", "distinct_people": 760000},
                                                                   {"date": "2025-10-31", "distinct_people": 700000}]
+    model["py2026"]["enrolled_history_comparable"] = True
     enrolled = ex.build_report(model)["monthly_yoy"]["metrics"]["enrolled"]
     nov = enrolled["rows"][1]
-    assert nov["py2027_period"] == ex.MONTH_TO_DATE and nov["absolute_difference"] is None
+    assert nov["py2027_period_type"] == ex.MONTH_TO_DATE and nov["comparable"] is False
+    assert nov["absolute_difference"] is None
     assert nov["percent_difference"] is None
     oct_ = enrolled["rows"][0]
-    assert oct_["py2027_period"] == ex.FULL_MONTH and oct_["absolute_difference"] == 100000
+    assert oct_["py2027_period_type"] == ex.FULL_MONTH and oct_["comparable"] is True
+    assert oct_["absolute_difference"] == 100000
     current = ex.build_report(model)["monthly_yoy"]["current_month"]
     assert current["message"] == ex.SAME_PERIOD_PENDING and current["same_period"] is None
     chart = eh.monthly_chart(ex.build_report(model))
@@ -169,6 +182,7 @@ def test_incompatible_cancellation_never_on_same_yoy_axis(tmp_path):
 
 def test_daily_supports_two_series_when_compatible(tmp_path):
     model = live_model(tmp_path)
+    model["py2026"]["enrolled_history_comparable"] = True
     model["py2026"]["report"]["historical_population_series"] = [{"date": "2025-11-09", "distinct_people": 760000},
                                                                   {"date": "2025-11-01", "distinct_people": 700000}]
     report = ex.build_report(model)
@@ -177,13 +191,18 @@ def test_daily_supports_two_series_when_compatible(tmp_path):
     assert enrolled["categories"] == ["2026-10-30", "2026-11-01", "2026-11-09"]
     assert enrolled["py2026"] == [None, 700000, 760000]
     chart = eh.daily_chart(report)
-    assert ">PY2026<" in chart and ">PY2027<" in chart
+    panel = [p for p in chart.split("<div class='panel'") if "data-metric='enrolled'" in p][0]
+    assert panel.count("<svg") == 1 and ">PY2026<" in panel and ">PY2027<" in panel
+    assert "Currently Enrolled Trend — PY2026 vs PY2027" in panel
+    assert "<polyline" in panel
 
 
 def test_daily_py2027_only_shows_plain_note(tmp_path):
     report = report_for(tmp_path)
     chart = eh.daily_chart(report)
-    assert ex.DAILY_PY2026_PENDING in chart and ">PY2026<" not in chart
+    assert ex.PY2026_PENDING in chart and ">PY2026<" not in chart
+    assert "Currently Enrolled Trend — PY2027" in chart
+    assert "PY2026 vs PY2027" not in [line for line in chart.split("<h4>") if "Enrolled" in line][0]
     assert "Nov 01" in chart
 
 
@@ -191,9 +210,12 @@ def test_daily_py2027_only_shows_plain_note(tmp_path):
 
 def test_ce_section_is_simplified(tmp_path):
     chart = eh.ce_chart(report_for(tmp_path))
-    assert "Indicative comparison" in chart and "PY2026 estimated diagnostic range" in chart
-    assert "865,946 → 1,000,000" in chart and "Closest available PY2026 scenario: <b>1,000,000</b>" in chart
-    assert eh.CE_FOOTNOTE in chart and "CE1" not in chart and "not selected as official" not in chart
+    assert ex.CE_ALIGNMENT_SUBTITLE in chart and "PY2026 database scenarios" in chart
+    assert "PY2027 dashboard" in chart and "865,946 → 1,000,000" in chart
+    assert "Exact database count" in chart and "Dashboard count" in chart
+    assert eh.CE_FOOTNOTE in chart and "CE1" not in chart
+    for phrase in ("high estimate", "low estimate", "estimated diagnostic range"):
+        assert phrase not in chart.lower()
 
 
 def test_funnel_uses_friendly_freshness(tmp_path):
@@ -220,7 +242,8 @@ def test_nap_mix_footnote(tmp_path):
 def test_management_table_uses_business_labels(tmp_path):
     table = eh.management_table(report_for(tmp_path))
     assert "<th>Comparison</th>" in table and "Freshness" not in table
-    assert ">Indicative<" in table and ">PY2027 only<" in table
+    assert "Definition alignment in progress" in table and ">PY2027 only<" in table
+    assert table.count(">—<") >= 2
     for raw in ("DIAGNOSTIC", "PY2027_ONLY", "LIVE_THIS_RUN", "CE1"):
         assert raw not in table
 

@@ -240,7 +240,9 @@ def test_cancellation_population_never_compared_to_activity(tmp_path):
 
 def test_management_view_uses_dash_not_zero(tmp_path):
     view = {row["metric"]: row for row in report_for(tmp_path)["management_view"]}
-    assert view["Currently Enrolled (PY2026 CE1-CE4 range)"]["py2026"] == "865,946 – 1,000,000"
+    assert view["Currently Enrolled"]["py2026"] == "865,946 – 1,000,000"
+    assert view["Currently Enrolled"]["change"] == ex.DASH and view["Currently Enrolled"]["status"] == ex.ALIGNMENT
+    assert view["% Effectuated"]["change"] == ex.DASH and view["% Effectuated"]["status"] == ex.ALIGNMENT
     for label in ("New", "Active", "Passive", "Applications Started"):
         assert view[label]["py2026"] == ex.DASH and view[label]["change"] == ex.DASH
 

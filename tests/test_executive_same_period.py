@@ -200,8 +200,7 @@ def test_comparison_charts_preserve_semantic_status(tmp_path):
 
 def test_layout_order(tmp_path):
     html_text = ex.render_html(report_for(tmp_path))
-    order = [ex.SAME_PERIOD_TITLE, "Monthly Enrollment Comparison — PY2026 vs PY2027",
-             "Daily Enrollment Comparison — PY2026 vs PY2027", "Currently Enrolled comparison",
+    order = [ex.SAME_PERIOD_TITLE, "Monthly Enrollment", "Daily Enrollment", "Currently Enrolled comparison",
              "Same-Date Comparison", "PY2026 Status Population", "PY2027 Enrollment Mix", "PY2027 Application Funnel",
              "PY2026 Monthly Enrollment Lifecycle Activity", "PY2027 Cancellation / Termination Daily Activity",
              "Management View", "Technical details"]
