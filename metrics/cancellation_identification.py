@@ -167,7 +167,7 @@ def safe_inventory_row(widget: WidgetDiscovery) -> dict[str, Any]:
                 "disabled": role.disabled,
                 "locked": role.locked,
                 "filter_kind": role.filter_kind,
-                "filter_fingerprint": role.filter_fingerprint,
+                "matches_verified_dashboard_filter": role.matches_verified_dashboard_filter,
                 "aggregation_functions": list(role.aggregation_functions),
             }
             for role in s.metadata_roles

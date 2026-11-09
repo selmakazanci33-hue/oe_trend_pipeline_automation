@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -148,7 +149,7 @@ class ObservedIdentityTests(unittest.TestCase):
             self.assertEqual(first.status, WRITE_RECORDED)
             self.assertEqual(again.status, WRITE_ALREADY_RECORDED)
             self.assertEqual(again.point.value, 1201)
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM metric_snapshots").fetchone()[0], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM source_series_points").fetchone()[0], 1)
         figure = source_series_figure([("2026-03-01", 1201), ("2026-03-02", 1302)])

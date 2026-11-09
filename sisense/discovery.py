@@ -14,11 +14,11 @@ Nothing here sends a request.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Iterable, Mapping
 
 from playwright.sync_api import BrowserContext, Request
@@ -91,11 +91,14 @@ class Column:
 
 @dataclass(frozen=True)
 class MetadataRole:
-    """Safe role of one metadata item. No filter members and no formula text.
+    """Safe role of one metadata item. No filter members, no formula text, no filter hashes.
 
-    ``filter_fingerprint`` is a one-way hash of the filter definition so it can be
-    compared with the verified payload without persisting member values.
-    ``aggregation_functions`` are formula function names only (e.g. ``count``).
+    ``matches_verified_dashboard_filter`` is decided in memory against the verified
+    payload's dashboard filter on the same field: True identical, False different,
+    None when that field is not a verified dashboard filter. An unsalted hash of a
+    short member list could be reversed by enumeration, so none is kept.
+    ``aggregation_functions`` holds known Sisense aggregation names only; any other
+    formula function is reported as ``other``.
     """
 
     panel: str
@@ -111,7 +114,7 @@ class MetadataRole:
     disabled: bool | None = None
     locked: bool | None = None
     filter_kind: str | None = None
-    filter_fingerprint: str | None = None
+    matches_verified_dashboard_filter: bool | None = None
     aggregation_functions: tuple[str, ...] = ()
 
 
@@ -185,19 +188,27 @@ def _context_fields(jaql: Mapping[str, Any]) -> tuple[FieldIdentity, ...]:
 
 
 _FUNCTION_NAME = re.compile(r"([A-Za-z]+)\s*\(")
+KNOWN_AGGREGATIONS = frozenset({
+    "count", "dupcount", "countduplicates", "sum", "avg", "min", "max", "median",
+    "stdev", "stdevp", "var", "varp",
+})
+OTHER_FUNCTION = "other"
 
 
 def aggregation_functions(jaql: Mapping[str, Any]) -> tuple[str, ...]:
-    """Lower-case formula function names, or ``jaql.agg``. Literals are not returned."""
+    """Known Sisense aggregation names in a formula, or ``jaql.agg``; others become ``other``."""
     names: list[str] = []
+    sources = []
     formula = jaql.get("formula")
     if isinstance(formula, str):
-        for name in _FUNCTION_NAME.findall(formula):
-            if name.lower() not in names:
-                names.append(name.lower())
+        sources.extend(_FUNCTION_NAME.findall(formula))
     agg = _text(jaql.get("agg"))
-    if agg is not None and agg.lower() not in names:
-        names.append(agg.lower())
+    if agg is not None:
+        sources.append(agg)
+    for name in sources:
+        safe = name.lower() if name.lower() in KNOWN_AGGREGATIONS else OTHER_FUNCTION
+        if safe not in names:
+            names.append(safe)
     return tuple(names)
 
 
@@ -207,7 +218,7 @@ def filter_kind(filter_value: Any) -> str | None:
     if filter_value.get("all") is True:
         return "all"
     if isinstance(filter_value.get("members"), list):
-        return "members"
+        return "member_list"
     if "startsWith" in filter_value:
         return "startsWith"
     if "from" in filter_value or "to" in filter_value:
@@ -217,21 +228,37 @@ def filter_kind(filter_value: Any) -> str | None:
     return "other"
 
 
-def filter_definition_fingerprint(filter_value: Any) -> str | None:
-    """SHA-256 of the canonical filter definition. Member order is ignored."""
-    if not isinstance(filter_value, Mapping):
+def _canonical_filter(value: Any) -> Any:
+    """Member order is ignored."""
+    if isinstance(value, Mapping):
+        return {str(key): _canonical_filter(item) for key, item in value.items()}
+    if isinstance(value, list):
+        items = [_canonical_filter(item) for item in value]
+        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+    return value
+
+
+@lru_cache(maxsize=1)
+def verified_dashboard_filter_definitions() -> dict[str, Any]:
+    """``table.column`` -> canonical filter for each dashboard filter on the verified payload. In memory only."""
+    from sisense.payloads.currently_enrolled import VERIFIED_PAYLOAD_FILE
+
+    payload = json.loads(VERIFIED_PAYLOAD_FILE.read_text(encoding="utf-8"))
+    definitions = {}
+    for item in payload.get("metadata") or []:
+        if not isinstance(item, Mapping) or item.get("panel") != "scope":
+            continue
+        jaql = item.get("jaql") if isinstance(item.get("jaql"), Mapping) else {}
+        if jaql.get("isDashboardFilter") is True and isinstance(jaql.get("filter"), Mapping):
+            definitions[f"{jaql.get('table')}.{jaql.get('column')}"] = _canonical_filter(jaql["filter"])
+    return definitions
+
+
+def matches_verified_dashboard_filter(table: str | None, column: str | None, filter_value: Any) -> bool | None:
+    reference = verified_dashboard_filter_definitions().get(f"{table}.{column}")
+    if reference is None or not isinstance(filter_value, Mapping):
         return None
-
-    def canonical(value: Any) -> Any:
-        if isinstance(value, Mapping):
-            return {str(key): canonical(item) for key, item in value.items()}
-        if isinstance(value, list):
-            items = [canonical(item) for item in value]
-            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
-        return value
-
-    material = json.dumps(canonical(filter_value), sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return _canonical_filter(filter_value) == reference
 
 
 def _optional_bool(value: Any) -> bool | None:
@@ -269,7 +296,8 @@ def widget_structure(payload: Mapping[str, Any] | None) -> WidgetStructure | Non
                 disabled=_optional_bool(item.get("disabled")),
                 locked=_optional_bool(item.get("locked")),
                 filter_kind=filter_kind(jaql.get("filter")),
-                filter_fingerprint=filter_definition_fingerprint(jaql.get("filter")),
+                matches_verified_dashboard_filter=matches_verified_dashboard_filter(
+                    table, column_name, jaql.get("filter")),
             ))
             continue
         kind = "measure" if jaql.get("type") == "measure" or "formula" in jaql else "dimension"

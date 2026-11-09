@@ -46,7 +46,7 @@ from database.comparison.field_mapping import (
 from database.discovery.enrollment_source import qualified_name, quote_identifier
 from database.models import DatabaseError, QueryExecutionError
 from database.query_runner import assert_read_only
-from sisense.discovery import filter_definition_fingerprint, filter_kind, normalize_label
+from sisense.discovery import filter_kind, normalize_label, verified_dashboard_filter_definitions
 from sisense.status_metric_inventory import load_discovery_artifact
 
 JSON_NAME = "py2026_activity_semantic_bridge.json"
@@ -357,7 +357,7 @@ def classify_activity_filters(discovery: dict | None, columns: dict) -> dict:
     elif not capture_complete:
         decision, reason = UNRESOLVED, (
             "Discovery artifact predates filter-flag capture. Re-run discovery to record "
-            "isDashboardFilter, disabled and the filter fingerprint for each scope filter.")
+            "isDashboardFilter, disabled and the verified-filter match for each scope filter.")
     elif any(item["mapping_status"] == NOT_SUPPORTED for item in classified):
         decision, reason = NOT_SUPPORTED, "An applied filter has no historical column."
     elif any(item["mapping_status"] != SUPPORTED for item in classified):
@@ -397,20 +397,10 @@ def classify_activity_filters(discovery: dict | None, columns: dict) -> dict:
 
 
 def verified_dashboard_filters() -> list[dict]:
-    """Dashboard filters on the verified Currently Enrolled request, fingerprinted."""
-    payload = json.loads(VERIFIED_PAYLOAD_FILE.read_text(encoding="utf-8"))
+    """Dashboard filters on the verified Currently Enrolled request. Field and kind only."""
     rows = []
-    for item in payload.get("metadata") or []:
-        if not isinstance(item, dict) or item.get("panel") != "scope":
-            continue
-        jaql = item.get("jaql") or {}
-        if jaql.get("isDashboardFilter") is not True:
-            continue
-        rows.append({
-            "sisense_field": f"{jaql.get('table')}.{jaql.get('column')}",
-            "filter_kind": filter_kind(jaql.get("filter")),
-            "filter_fingerprint": filter_definition_fingerprint(jaql.get("filter")),
-        })
+    for field, definition in verified_dashboard_filter_definitions().items():
+        rows.append({"sisense_field": field, "filter_kind": filter_kind(definition)})
     return rows
 
 
@@ -1679,7 +1669,7 @@ def _classify_discovered_filter(role: dict, historical: dict, verified_dashboard
         status, note = UNRESOLVED, "No proven historical mapping for this filter."
     elif py2026 is None:
         status, note = NOT_SUPPORTED, "Historical snapshot has no column for this filter."
-    elif verified is None or role.get("filter_fingerprint") != verified["filter_fingerprint"]:
+    elif verified is None or role.get("matches_verified_dashboard_filter") is not True:
         status, note = UNRESOLVED, "Filter definition differs from the verified dashboard filter."
     elif target == "coverage_year":
         status, note = SUPPORTED, "Same definition as verified 2027; plan-year shifted."
@@ -1696,7 +1686,7 @@ def _classify_discovered_filter(role: dict, historical: dict, verified_dashboard
         "locked": role.get("locked"),
         "mapping_status": status,
         "historical_predicate": predicate,
-        "evidence": f"Captured activity-widget scope filter. {note} Member values are compared by fingerprint only.",
+        "evidence": f"Captured activity-widget scope filter. {note} Member values were compared in memory at capture and are not stored.",
     }
 
 

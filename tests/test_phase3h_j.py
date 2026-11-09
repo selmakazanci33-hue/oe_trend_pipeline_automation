@@ -208,6 +208,7 @@ class SafeStructureTests(unittest.TestCase):
         self.assertNotIn(FORMULA, document)
         self.assertNotIn("FORMULA-TEXT-SENTINEL", document)
         self.assertNotIn("formula", document.lower())
+        self.assertNotIn("sentinel", document.lower())
         for role in result.widgets[0].structure.metadata_roles:
             self.assertNotIn(FORMULA, role.title or "")
             self.assertNotIn(FORMULA, role.column_title or "")

@@ -52,7 +52,7 @@ from database.comparison.activity_semantic_bridge import (
 )
 from database.models import QueryResult
 from database.query_runner import assert_read_only
-from sisense.discovery import filter_definition_fingerprint, widget_structure
+from sisense.discovery import widget_structure
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -393,8 +393,6 @@ class SemanticBridgeTests(unittest.TestCase):
             self.assertNotIn("2027", sql)
 
     def test_activity_widget_filters_from_captured_flags(self):
-        year = filter_definition_fingerprint({"explicit": True, "multiSelection": True, "members": ["2027"]})
-        health = filter_definition_fingerprint({"explicit": True, "multiSelection": True, "members": ["Health"]})
         columns = {**columns_meta(),
                    "insurance_type_description": {"name": "insurance_type_description", "data_type": "varchar"}}
 
@@ -415,7 +413,7 @@ class SemanticBridgeTests(unittest.TestCase):
 
         year_role = {"panel": "scope", "kind": "filter", "table": "ssap_applications",
                      "column": "coverage_year", "is_dashboard_filter": True, "disabled": False,
-                     "filter_kind": "members", "filter_fingerprint": year}
+                     "filter_kind": "member_list", "matches_verified_dashboard_filter": True}
         ignored = classify_activity_filters(discovery([year_role]), columns)
         self.assertEqual(ignored["decision"], SUPPORTED)
         self.assertEqual(ignored["historical_predicates"], ["coverage_year = 2026"])
@@ -428,16 +426,20 @@ class SemanticBridgeTests(unittest.TestCase):
 
         health_role = {"panel": "scope", "kind": "filter", "table": "enrollment",
                        "column": "insurance_type_description", "is_dashboard_filter": True,
-                       "disabled": False, "filter_kind": "members", "filter_fingerprint": health}
+                       "disabled": False, "filter_kind": "member_list",
+                       "matches_verified_dashboard_filter": True}
         applied = classify_activity_filters(discovery([year_role, health_role]), columns)
         self.assertEqual(applied["decision"], SUPPORTED)
         self.assertTrue(applied["apply_insurance_health"])
 
-        other = {**health_role, "filter_fingerprint": "sha256:different"}
+        other = {**health_role, "matches_verified_dashboard_filter": False}
         self.assertEqual(classify_activity_filters(discovery([year_role, other]), columns)["decision"], UNRESOLVED)
+        uncaptured = {**health_role, "matches_verified_dashboard_filter": None}
+        self.assertEqual(
+            classify_activity_filters(discovery([year_role, uncaptured]), columns)["decision"], UNRESOLVED)
         own = {"panel": "scope", "kind": "filter", "table": "enrollment", "column": "hios_issuer_id",
-               "is_dashboard_filter": False, "disabled": False, "filter_kind": "members",
-               "filter_fingerprint": "sha256:x"}
+               "is_dashboard_filter": False, "disabled": False, "filter_kind": "member_list",
+               "matches_verified_dashboard_filter": None}
         self.assertEqual(classify_activity_filters(discovery([year_role, own]), columns)["decision"], UNRESOLVED)
         disabled = {**own, "disabled": True}
         self.assertEqual(classify_activity_filters(discovery([year_role, disabled]), columns)["decision"], SUPPORTED)
@@ -456,22 +458,38 @@ class SemanticBridgeTests(unittest.TestCase):
                           "datatype": "datetime", "level": "days", "title": "Days"}},
                 {"jaql": {"type": "measure", "formula": "Count([A1]) ", "title": "Cancelled Policies",
                           "context": {"[A1]": {"table": "enrollment", "column": "id"}}}},
+                {"jaql": {"type": "measure", "formula": "CUSTOMNAME([A2]) ", "title": "Other",
+                          "context": {"[A2]": {"table": "enrollment", "column": "id"}}}},
                 {"jaql": {"table": "ssap_applications", "column": "coverage_year",
                           "isDashboardFilter": True,
-                          "filter": {"explicit": True, "multiSelection": True, "members": ["2027"]}},
+                          "filter": {"multiSelection": True, "members": ["2027"], "explicit": True}},
                  "panel": "scope", "disabled": False, "locked": True},
+                {"jaql": {"table": "enrollment", "column": "insurance_type_description",
+                          "isDashboardFilter": True,
+                          "filter": {"explicit": True, "multiSelection": True, "members": ["Dental"]}},
+                 "panel": "scope"},
+                {"jaql": {"table": "enrollment", "column": "hios_issuer_id",
+                          "filter": {"explicit": True, "multiSelection": True, "members": ["2027"]}},
+                 "panel": "scope"},
             ],
         })
-        scope = [role for role in structure.metadata_roles if role.panel == "scope"][0]
-        measure = [role for role in structure.metadata_roles if role.kind == "measure"][0]
-        self.assertTrue(scope.is_dashboard_filter)
-        self.assertFalse(scope.disabled)
-        self.assertTrue(scope.locked)
-        self.assertEqual(scope.filter_kind, "members")
-        self.assertEqual(scope.filter_fingerprint, filter_definition_fingerprint(
-            {"members": ["2027"], "multiSelection": True, "explicit": True}))
-        self.assertNotIn("2027", scope.filter_fingerprint)
-        self.assertEqual(measure.aggregation_functions, ("count",))
+        year, insurance, issuer = [role for role in structure.metadata_roles if role.panel == "scope"]
+        count, custom = [role for role in structure.metadata_roles if role.kind == "measure"]
+        self.assertTrue(year.is_dashboard_filter)
+        self.assertFalse(year.disabled)
+        self.assertTrue(year.locked)
+        self.assertEqual(year.filter_kind, "member_list")
+        self.assertIs(year.matches_verified_dashboard_filter, True)
+        self.assertIs(insurance.matches_verified_dashboard_filter, False)
+        self.assertIsNone(issuer.matches_verified_dashboard_filter)
+        self.assertEqual(count.aggregation_functions, ("count",))
+        self.assertEqual(custom.aggregation_functions, ("other",))
+        persisted = json.dumps([
+            {key: value for key, value in vars(role).items() if key != "context_fields"}
+            for role in structure.metadata_roles
+        ])
+        for leaked in ("2027", "Dental", "members", "explicit", "multiSelection", "customname", "sha256"):
+            self.assertNotIn(leaked.lower(), persisted.lower())
 
     def test_term_values_are_all_listed(self):
         client = FakeClient()
