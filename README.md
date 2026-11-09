@@ -298,6 +298,15 @@ a COMPARABLE metric.
 .\.venv\Scripts\python.exe -m database.comparison.event_date_validation
 ```
 
+Cancelled/Terminated activity semantic bridge inspects COUNT vs DISTINCT,
+status members, coverage year, widget filters, event-date field behavior,
+and extraction strategies. It does not copy Currently Enrolled filters, does
+not union snapshots, and does not assign COMPARABLE unless every check PASS.
+
+```powershell
+.\.venv\Scripts\python.exe -m database.comparison.activity_semantic_bridge
+```
+
 ## Unit tests
 
 Unit tests use fakes only; outbound network connections are blocked during the
