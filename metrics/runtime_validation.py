@@ -87,6 +87,7 @@ class RuntimeValue:
     time_grain: str | None = None
     date_semantics: str | None = None
     series_point_count: int | None = None
+    series_points: tuple[tuple[str, int], ...] = ()
 
     @property
     def production_status(self) -> str:

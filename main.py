@@ -190,21 +190,40 @@ def run_session_diagnostics(
     log_cookie_diagnostics(session.context)
 
 
+@dataclass(frozen=True)
+class PipelineRun:
+    """Values retrieved by one pipeline invocation (held in memory for callers such as the executive runner)."""
+
+    exit_code: int
+    result: MetricResult | None = None
+    passive_values: tuple[PassiveRunValue, ...] = ()
+    runtime_rows: tuple[RuntimeValue, ...] = ()
+    snapshot_status: str | None = None
+    failure: str | None = None
+
+
 def main() -> int:
     configure_logging()
+    return run_pipeline().exit_code
 
+
+def _runtime_rows(outcome: DiscoveryOutcome | None) -> tuple[RuntimeValue, ...]:
+    return outcome.runtime.rows if outcome is not None and outcome.runtime is not None else ()
+
+
+def run_pipeline(settings: Settings | None = None) -> PipelineRun:
     try:
-        settings = load_settings()
+        settings = settings or load_settings()
         query = build_currently_enrolled_query()
     except VerifiedJaqlPayloadRequired as exc:
         logger.error("STOP: %s", exc)
-        return EXIT_MISSING_VERIFIED_INFO
+        return PipelineRun(EXIT_MISSING_VERIFIED_INFO, failure=type(exc).__name__)
     except MissingVerifiedInformation as exc:
         logger.error("STOP: %s", exc)
-        return EXIT_MISSING_VERIFIED_INFO
+        return PipelineRun(EXIT_MISSING_VERIFIED_INFO, failure=type(exc).__name__)
     except (ConfigurationError, SisenseError) as exc:
         logger.error("Configuration error: %s", exc)
-        return EXIT_FAILURE
+        return PipelineRun(EXIT_FAILURE, failure=type(exc).__name__)
 
     run_id = uuid.uuid4().hex
     reporting = create_reporting(settings)
@@ -213,7 +232,7 @@ def main() -> int:
             reporting.begin_run(run_id)
         except Exception as exc:
             logger.error("Snapshot history unavailable (%s); Sisense was not contacted", type(exc).__name__)
-            return EXIT_FAILURE
+            return PipelineRun(EXIT_FAILURE, failure=type(exc).__name__)
 
     production_passive = production_passive_metrics(
         None if settings.history_db_path is None else settings.history_db_path.parent / OBSERVATIONS_FILE
@@ -237,7 +256,7 @@ def main() -> int:
                 if settings.diagnostics_only:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
                     logger.info("Diagnostics-only mode: no JAQL request was sent by this application")
-                    return EXIT_OK
+                    return PipelineRun(EXIT_OK, failure="Diagnostics-only mode")
                 if settings.debug_session:
                     run_session_diagnostics(session, authenticator.jaql_observer, settings)
                 request_metadata = obtain_request_metadata(session, authenticator.jaql_observer, settings)
@@ -261,12 +280,13 @@ def main() -> int:
         logger.error("STOP: %s", exc)
         report_failure(reporting, run_id, exc, production_passive)
         finish_runtime_validation(discovery_outcome, settings, None)
-        return EXIT_MISSING_VERIFIED_INFO
+        return PipelineRun(EXIT_MISSING_VERIFIED_INFO, runtime_rows=_runtime_rows(discovery_outcome),
+                           failure=type(exc).__name__)
     except (SisenseError, PlaywrightError) as exc:
         logger.error("Retrieval failed: %s: %s", type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "")
         report_failure(reporting, run_id, exc, production_passive)
         finish_runtime_validation(discovery_outcome, settings, None)
-        return EXIT_FAILURE
+        return PipelineRun(EXIT_FAILURE, runtime_rows=_runtime_rows(discovery_outcome), failure=type(exc).__name__)
 
     result = MetricResult(
         metric=query.metric,
@@ -298,17 +318,20 @@ def main() -> int:
     # failure. A structural IDENTITY_FAIL is reported on the validation artifact
     # and does not block these snapshots. Do not treat that as a new gate.
     passive_values = passive_run_values(passive_outcomes, result, passive_retrieved_at, production_passive)
+    rows = _runtime_rows(discovery_outcome)
     if reporting is None:
         print_passive_metrics(passive_values, None)
-        return EXIT_OK
+        return PipelineRun(EXIT_OK, result, passive_values, rows, "NOT WRITTEN (no history configured)")
     try:
         summary = reporting.complete_success(run_id, result, passive_values)
     except Exception as exc:
         logger.error("Snapshot/report step failed: %s", type(exc).__name__)
-        return EXIT_FAILURE
+        return PipelineRun(EXIT_FAILURE, result, passive_values, rows, "FAILED", type(exc).__name__)
     print_reporting_summary(summary, result)
     print_passive_metrics(passive_values, summary)
-    return EXIT_OK
+    write = summary.snapshot_write
+    status = "NOT WRITTEN" if write is None else ("SAVED" if write.saved else f"SKIPPED ({write.status})")
+    return PipelineRun(EXIT_OK, result, passive_values, rows, status)
 
 
 def create_source_observer(settings: Settings, metrics) -> SourceWidgetObserver | None:

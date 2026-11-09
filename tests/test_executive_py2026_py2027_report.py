@@ -6,20 +6,23 @@ import pytest
 from comparison import executive_py2026_py2027_report as ex
 from comparison.currently_enrolled import ComparisonOutputError
 
+LIVE_AT = "2026-11-09T12:00:00+00:00"
+OLD_AT = "2026-11-01T12:00:00+00:00"
+
 
 def make_history(path, with_series=True):
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE metric_snapshots (run_id TEXT, metric_id TEXT, metric_value REAL, plan_year INT, "
                        "retrieved_at_utc TEXT, retrieval_status TEXT)")
     rows = [
-        ("r1", "currently_enrolled_people", 900000, "2026-11-01T12:00:00+00:00"),
-        ("r2", "currently_enrolled_people", 950000, "2026-11-08T12:00:00+00:00"),
-        ("r2", "percent_effectuated", 0.62, "2026-11-08T12:00:00+00:00"),
-        ("r2", "applications_started", 400000, "2026-11-08T12:00:00+00:00"),
-        ("r2", "submitted_applications", 300000, "2026-11-08T12:00:00+00:00"),
-        ("r2", "new_enrolled", 4400, "2026-11-08T12:00:00+00:00"),
-        ("r2", "active_enrolled", 58800, "2026-11-08T12:00:00+00:00"),
-        ("r2", "passive_enrolled", 734500, "2026-11-08T12:00:00+00:00"),
+        ("r0", "currently_enrolled_people", 800000, "2026-10-30T12:00:00+00:00"),
+        ("r1", "currently_enrolled_people", 900000, OLD_AT),
+        ("r1", "percent_effectuated", 0.5, OLD_AT),
+        ("r1", "applications_started", 1, OLD_AT),
+        ("r1", "submitted_applications", 1, OLD_AT),
+        ("r1", "new_enrolled", 1, OLD_AT),
+        ("r1", "active_enrolled", 1, OLD_AT),
+        ("r1", "passive_enrolled", 1, OLD_AT),
     ]
     connection.executemany("INSERT INTO metric_snapshots VALUES (?, ?, ?, 2027, ?, 'VALIDATED')", rows)
     if with_series:
@@ -29,163 +32,273 @@ def make_history(path, with_series=True):
         connection.executemany(
             "INSERT INTO source_series_points (metric_id, source_date, time_grain, date_semantics, value, "
             "definition_fingerprint, observed_at_utc) VALUES ('cancelled_policies_daily', ?, 'days', 'last_update', ?, "
-            "'fp', '2026-11-08T12:00:00+00:00')", [("2026-11-01", 2534), ("2026-11-02", 5724)])
+            "'fp', ?)", [("2026-10-30", 111, OLD_AT), ("2026-10-31", 222, OLD_AT)])
     connection.commit()
     connection.close()
 
 
-PHASE_6B = {
-    "currently_enrolled_candidates": [
-        {"candidate_id": "CE1", "description": "status filter", "distinct_people": 1000000},
-        {"candidate_id": "CE2", "description": "benefit window", "distinct_people": 980000},
-    ],
-    "percent_effectuated": {"per_candidate": [{"candidate_id": "CE1", "ratio": 0.9}]},
-    "identifier_behavior": {"distinct_people": 1320502, "distinct_policies": 1688696},
-    "population_diagnostics": [{"label": "PY2026_LATEST_CANCELLED_POPULATION", "distinct_policies": 200000,
-                                "distinct_people": 150000}],
-    "oe_aligned_temporal_diagnostics": {"fields": {"enrollment_create_date": {
-        "monthly": [{"month": "2025-10", "row_count": 10, "distinct_people": 900000, "distinct_policies": 9},
-                    {"month": "2025-11", "row_count": 10, "distinct_people": 100000, "distinct_policies": 9}],
-        "cumulative": [{"through": "2025-11-08", "row_count": 1, "distinct_people": 1037238, "distinct_policies": 1},
-                       {"through": "2025-12-31", "row_count": 1, "distinct_people": 1172362, "distinct_policies": 1}]}}},
+def phase_6b(scale=1):
+    return {
+        "currently_enrolled_candidates": [
+            {"candidate_id": "CE1", "description": "status filter", "distinct_people": 1000000 * scale},
+            {"candidate_id": "CE2", "description": "benefit window", "distinct_people": 865946 * scale},
+        ],
+        "percent_effectuated": {"per_candidate": [{"candidate_id": "CE1", "ratio": 0.9}]},
+        "identifier_behavior": {"distinct_people": 1320502, "distinct_policies": 1688696},
+        "status_distributions": {
+            "enrollment_status": [{"status_value": "Enrolled", "row_count": 5, "distinct_people": 4,
+                                   "distinct_policies": 3}],
+            "enrollee_status": None},
+        "population_diagnostics": [{"label": "PY2026_LATEST_CANCELLED_POPULATION", "distinct_policies": 200000,
+                                    "distinct_people": 150000}],
+        "oe_aligned_temporal_diagnostics": {"fields": {
+            "enrollment_create_date": {
+                "monthly": [{"month": "2025-10", "row_count": 10, "distinct_people": 900000, "distinct_policies": 9},
+                            {"month": "2025-11", "row_count": 10, "distinct_people": 100000, "distinct_policies": 9},
+                            {"month": "2026-01", "row_count": 10, "distinct_people": 5000, "distinct_policies": 9}],
+                "cumulative": [{"through": "2025-11-08", "distinct_people": 1037238, "distinct_policies": 1},
+                               {"through": "2025-12-31", "distinct_people": 1172362, "distinct_policies": 1}]},
+            "enrollment_confirmation_date": {
+                "monthly": [{"month": "2025-10", "row_count": 10, "distinct_people": 800000, "distinct_policies": 9},
+                            {"month": "2025-12", "row_count": 10, "distinct_people": 90000, "distinct_policies": 9}],
+                "cumulative": None}}},
+    }
+
+
+LIVE_VALUES = {
+    "currently_enrolled_people": {"value": 950000, "retrieved_at": LIVE_AT},
+    "percent_effectuated": {"value": 0.62, "retrieved_at": LIVE_AT},
+    "applications_started": {"value": 400000, "retrieved_at": LIVE_AT},
+    "submitted_applications": {"value": 300000, "retrieved_at": LIVE_AT},
+    "total_applicants": {"value": 500000, "retrieved_at": LIVE_AT},
+    "new_enrolled": {"value": 4400, "retrieved_at": LIVE_AT},
+    "active_enrolled": {"value": 58800, "retrieved_at": LIVE_AT},
+    "passive_enrolled": {"value": 734500, "retrieved_at": LIVE_AT},
 }
+LIVE_SERIES = {"cancelled_policies_daily": {"points": [{"date": "2026-11-01", "value": 2534},
+                                                       {"date": "2026-11-02", "value": 5724}],
+                                            "retrieved_at": LIVE_AT}}
 
 
-def evidence(tmp_path, six_b=PHASE_6B, history=True, series=True, validation=True):
+def live_model(tmp_path, values=LIVE_VALUES, series=LIVE_SERIES, live_ok=True, db_live=True, history=True,
+               with_series_table=True):
     path = tmp_path / "h.sqlite3"
     if history:
-        make_history(path, series)
-    return {
-        "phase_6b": six_b,
-        "phase_6d": None,
-        "validation": {"generated_at_utc": "2026-11-08T12:00:00+00:00",
-                       "metrics": [{"metric_id": "total_applicants", "runtime_value": 500000}]} if validation else None,
-        "history": ex.read_history(path if history else None),
-    }
+        make_history(path, with_series_table)
+    hist = ex.read_history(path if history else None)
+    py2026 = ex.py2026_live(phase_6b(), LIVE_AT) if db_live else ex.py2026_fallback(phase_6b(scale=2), OLD_AT, "x")
+    py2027 = ex.py2027_model(values, series, hist, None, live_ok, None if live_ok else "SisenseError")
+    return ex.build_model(py2026, py2027, hist, None, LIVE_AT)
+
+
+def report_for(tmp_path, **kwargs):
+    return ex.build_report(live_model(tmp_path, **kwargs))
+
+
+def snapshot(report):
+    return {row["metric_id"]: row for row in report["py2027_current_snapshot"]}
 
 
 def rows_by_metric(report):
     return {row["metric"]: row for row in report["population_comparison"]["rows"]}
 
 
+# --- freshness ---------------------------------------------------------------------------
+
+def test_live_db_values_override_historical_phase_6b_artifact(tmp_path, monkeypatch):
+    artifact = tmp_path / "6b.json"
+    artifact.write_text(json.dumps(phase_6b(scale=2)), encoding="utf-8")
+    monkeypatch.setattr(ex, "PHASE_6B_REPORT", artifact)
+    report = report_for(tmp_path)
+    ce1 = rows_by_metric(report)["Currently Enrolled vs PY2026 CE1"]
+    assert ce1["py2026_value"] == 1000000 and ce1["py2026_freshness"] == ex.LIVE
+    assert ce1["py2026_retrieved_at"] == LIVE_AT
+    assert report["executive_summary"]["py2026"]["freshness"] == ex.LIVE
+
+
+def test_live_sisense_values_override_sqlite_current_values(tmp_path):
+    report = report_for(tmp_path)
+    ce = snapshot(report)["currently_enrolled_people"]
+    assert ce["value"] == 950000 and ce["freshness"] == ex.LIVE and ce["retrieved_at"] == LIVE_AT
+    assert ce["source"] == ex.PY2027_SOURCE
+    assert report["executive_summary"]["py2027"]["note"] == f"PY2027 Sisense: {ex.LIVE} / {LIVE_AT}"
+
+
+def test_successful_live_values_are_live_this_run(tmp_path):
+    report = report_for(tmp_path)
+    assert all(row["freshness"] == ex.LIVE for row in report["py2027_current_snapshot"])
+    assert all(k["freshness"] == ex.LIVE for k in report["kpis"])
+    series = report["cancellation_termination"]["py2027_daily_activity"]["cancelled_policies_daily"]
+    assert series["freshness"] == ex.LIVE and series["points"][0] == {"date": "2026-11-01", "value": 2534}
+
+
+def test_sisense_failure_is_visibly_stale_fallback(tmp_path):
+    report = report_for(tmp_path, live_ok=False)
+    ce = snapshot(report)["currently_enrolled_people"]
+    assert ce["value"] == 900000 and ce["freshness"] == ex.STALE and ce["retrieved_at"] == OLD_AT
+    summary = report["executive_summary"]["py2027"]
+    assert summary["freshness"] == ex.STALE
+    assert summary["note"].startswith("PY2027 Sisense unavailable") and OLD_AT in summary["note"]
+    html_text = ex.render_html(report)
+    assert "PY2027 Sisense unavailable" in html_text and "stale_fallback" in html_text
+    series = report["cancellation_termination"]["py2027_daily_activity"]["cancelled_policies_daily"]
+    assert series["freshness"] == ex.STALE and series["points"][0]["date"] == "2026-10-30"
+
+
+def test_db_failure_is_visibly_stale_fallback(tmp_path):
+    report = report_for(tmp_path, db_live=False)
+    py26 = report["executive_summary"]["py2026"]
+    assert py26["freshness"] == ex.STALE and "PY2026 DB unavailable" in py26["note"]
+    assert rows_by_metric(report)["Currently Enrolled vs PY2026 CE1"]["py2026_freshness"] == ex.STALE
+
+
+def test_missing_live_metric_falls_back_per_metric(tmp_path):
+    values = {k: v for k, v in LIVE_VALUES.items() if k != "new_enrolled"}
+    item = snapshot(report_for(tmp_path, values=values))
+    assert item["new_enrolled"]["freshness"] == ex.STALE and item["new_enrolled"]["retrieved_at"] == OLD_AT
+    assert item["active_enrolled"]["freshness"] == ex.LIVE
+
+
+def test_unavailable_without_live_or_history(tmp_path):
+    report = report_for(tmp_path, live_ok=False, history=False)
+    assert all(row["freshness"] == ex.UNAVAILABLE and row["value"] is None
+               for row in report["py2027_current_snapshot"])
+    assert report["executive_summary"]["py2027"]["freshness"] == ex.UNAVAILABLE
+
+
+def test_freshness_does_not_alter_comparison_status(tmp_path):
+    statuses = []
+    for index, kwargs in enumerate(({}, {"live_ok": False}, {"db_live": False})):
+        folder = tmp_path / f"m{index}"
+        folder.mkdir()
+        report = report_for(folder, **kwargs)
+        statuses.append(tuple((r["metric"], r["comparison_status"]) for r in report["population_comparison"]["rows"]))
+        assert report["production_comparable"] is False
+        assert report["new_active_passive"]["comparison_status"] == ex.PY2027_ONLY
+    assert statuses[0] == statuses[1] == statuses[2]
+    assert dict(statuses[0])["Currently Enrolled vs PY2026 CE1"] == ex.DIAGNOSTIC
+
+
+# --- semantics -------------------------------------------------------------------------------
+
 def test_invalid_comparisons_never_get_differences(tmp_path):
-    report = ex.build_report(evidence(tmp_path))
+    report = report_for(tmp_path)
     for row in report["population_comparison"]["rows"]:
         if row["comparison_status"] not in ex.DIFF_STATUSES:
             assert row["absolute_difference"] is None and row["percent_difference"] is None
     for status in (ex.PY2027_ONLY, ex.PY2026_ONLY, ex.NOT_COMPARABLE):
-        assert ex.difference(10, 20, status) == {"absolute_difference": None, "percent_difference": None,
-                                                 "difference_unit": None}
+        assert ex.difference(10, 20, status)["absolute_difference"] is None
 
 
-def test_diagnostic_rows_are_labelled_and_get_differences(tmp_path):
-    rows = rows_by_metric(ex.build_report(evidence(tmp_path)))
+def test_diagnostic_rows_get_labelled_differences(tmp_path):
+    rows = rows_by_metric(report_for(tmp_path))
     ce1 = rows["Currently Enrolled vs PY2026 CE1"]
-    assert ce1["comparison_status"] == ex.DIAGNOSTIC
     assert ce1["absolute_difference"] == -50000 and ce1["percent_difference"] == -5.0
     pe = rows["% Effectuated vs PY2026 CE1"]
-    assert pe["comparison_status"] == ex.DIAGNOSTIC and pe["percent_difference"] is None
-    assert pe["absolute_difference"] == -28.0 and pe["difference_unit"] == "percentage points"
+    assert pe["percent_difference"] is None and pe["absolute_difference"] == -28.0
 
 
-def test_na_stays_na_never_zero(tmp_path):
-    report = ex.build_report(evidence(tmp_path, validation=False))
-    snapshot = {row["metric_id"]: row for row in report["py2027_current_snapshot"]}
-    assert snapshot["total_applicants"]["value"] is None
-    assert snapshot["total_applicants"]["verification"] == ex.UNAVAILABLE
-    view = {row["metric"]: row for row in report["management_view"]}
-    assert view["Total Applicants"]["py2027"] == "N/A"
-    for row in report["management_view"]:
-        if row["status"].startswith(ex.PY2027_ONLY):
-            assert row["py2026"] == ex.DASH and row["change"] == ex.DASH
-    assert ex.fmt(None) == "N/A"
-
-
-def test_nap_is_py2027_only_and_bridge_preserved(tmp_path):
-    report = ex.build_report(evidence(tmp_path))
+def test_nap_is_py2027_only_and_not_a_proven_partition(tmp_path):
+    report = report_for(tmp_path)
     nap = report["new_active_passive"]
-    assert nap["comparison_status"] == ex.PY2027_ONLY
-    assert nap["py2026"] == ex.NAP_PY2026
+    assert nap["proven_partition"] is False and nap["py2026"] == ex.NAP_PY2026
     assert nap["phase_6d"]["new_classification"] == "OTHER_LIFECYCLE_CLASS"
     assert nap["phase_6d"]["activity_bridge"] == "NO_ACTIVITY_BRIDGE"
-    matrix = {row["metric"]: row for row in report["comparison_quality_matrix"]}
-    assert all(matrix[m]["semantic_status"] == ex.PY2027_ONLY for m in ("New", "Active", "Passive"))
-    assert "NO_ACTIVITY_BRIDGE" in " ".join(report["caveats"])
+    findings = " ".join(report["key_findings"])
+    assert "Not a proven partition" in findings
+    html_text = ex.render_html(report)
+    assert ex.NAP_FOOTER in html_text and "PY2027 Enrolled People — New / Active / Passive" in html_text
 
 
-def test_cancellation_population_and_activity_never_compared(tmp_path):
-    report = ex.build_report(evidence(tmp_path))
+def test_application_grains_remain_separate(tmp_path):
+    report = report_for(tmp_path)
+    apps = report["applications"]
+    assert apps["funnel"] == {"started": 400000, "submitted": 300000, "not_yet_submitted": 100000,
+                              "submitted_share_of_started": 75.0, "grain": "application"}
+    grains = {row["metric"]: row["grain"] for row in apps["rows"]}
+    assert grains["Total Applicants"] == "applicant" and grains["Applications Started"] == "application"
+    assert all(row["py2026_value"] == ex.NOT_FROM_ENROLLMENT for row in apps["rows"])
+    chart = ex.funnel_chart(report)
+    assert "75.0%" in chart and "separate grain" in chart
+
+
+def test_cancellation_population_never_compared_to_activity(tmp_path):
+    report = report_for(tmp_path)
     cancel = report["cancellation_termination"]
-    assert cancel["statement"] == ex.CANCEL_STATEMENT
-    assert cancel["py2026_population"][0]["comparison_status"] == ex.PY2026_ONLY
-    assert cancel["py2027_daily_activity"]["cancelled_policies_daily"]["points"][0] == {"date": "2026-11-01",
-                                                                                      "value": 2534}
-    assert cancel["py2027_daily_activity"]["terminated_policies_daily"]["points"] is None
     text = json.dumps(cancel)
     assert "absolute_difference" not in text and "percent_difference" not in text
+    assert cancel["statement"] == ex.CANCEL_STATEMENT
     assert all("Cancel" not in row["metric"] for row in report["management_view"])
 
 
-def test_application_metrics_never_use_py2026_table(tmp_path):
-    report = ex.build_report(evidence(tmp_path))
-    for row in report["applications"]["rows"]:
-        assert row["py2026_value"] == ex.NOT_FROM_ENROLLMENT
-        assert row["comparison_status"] == ex.PY2027_ONLY
-    assert report["applications"]["funnel"]["not_yet_submitted"] == 100000
-    applicants = [r for r in report["applications"]["rows"] if r["metric"] == "Total Applicants"][0]
-    assert applicants["verification"] == ex.VALIDATION_ONLY
+def test_management_view_uses_dash_not_zero(tmp_path):
+    view = {row["metric"]: row for row in report_for(tmp_path)["management_view"]}
+    assert view["Currently Enrolled (PY2026 CE1-CE4 range)"]["py2026"] == "865,946 – 1,000,000"
+    for label in ("New", "Active", "Passive", "Applications Started"):
+        assert view[label]["py2026"] == ex.DASH and view[label]["change"] == ex.DASH
 
 
-def test_temporal_section_labelled_and_anchor_unproven(tmp_path):
-    temporal = ex.build_report(evidence(tmp_path))["oe_temporal_diagnostic"]
-    assert temporal["label"] == "OE_LIFECYCLE_ALIGNMENT_DIAGNOSTIC"
-    assert temporal["anchor"] == "Official OE start anchor not proven; calendar-date alignment only."
-    roles = [m["period_role"] for m in temporal["fields"]["enrollment_create_date"]["monthly"]]
-    assert roles[0].startswith("context") and roles[1].startswith("OE emphasis")
+# --- charts ------------------------------------------------------------------------------
+
+def test_charts_render_when_values_exist(tmp_path):
+    report = report_for(tmp_path)
+    html_text = ex.render_html(report)
+    assert html_text.count("<svg") == 5
+    assert ex.CE_CHART_TITLE in html_text and ex.CE_CHART_STATUS in html_text
+    assert "865,946 – 1,000,000" in ex.ce_chart(report) and "950,000" in ex.ce_chart(report)
+    monthly = ex.monthly_chart(report)
+    assert "PY2026 Enrollment Lifecycle Activity by Month" in monthly and ex.OE_LABEL in monthly
+    assert ex.MONTHLY_FOOTNOTE in monthly
+    for month in ("2025-10", "2025-11", "2025-12", "2026-01"):
+        assert month in monthly
+    assert "http://" not in html_text and "https://" not in html_text and "<script" not in html_text
 
 
-def test_works_with_optional_artifacts_missing(tmp_path):
-    report = ex.build_report({"phase_6b": None, "phase_6d": None, "validation": None,
-                              "history": ex.read_history(None)})
-    assert report["population_comparison"]["available"] is False
-    assert report["oe_temporal_diagnostic"]["available"] is False
-    assert report["cancellation_termination"]["py2026_population"] is None
-    assert report["executive_summary"]["py2027_observed_at_utc"] is None
-    assert all(row["value"] is None for row in report["py2027_current_snapshot"])
-    json_path, html_path = ex.write_report(report, tmp_path / "out")
-    assert json_path.is_file() and "No data available" in html_path.read_text(encoding="utf-8")
+def test_unavailable_chart_data_creates_card_not_zeros(tmp_path):
+    report = ex.build_report(ex.build_model(
+        ex.py2026_fallback(None, None, "x"),
+        ex.py2027_model({}, {}, ex.read_history(None), None, False, "x"), ex.read_history(None), None, LIVE_AT))
+    html_text = ex.render_html(report)
+    assert "<svg" not in html_text
+    assert ex.SERIES_UNAVAILABLE in html_text
+    assert "unavailable for this run" in ex.nap_chart(report)
+    assert "unavailable for this run" in ex.monthly_chart(report)
+    assert ">0<" not in html_text
 
 
-def test_history_without_series_table(tmp_path):
-    report = ex.build_report(evidence(tmp_path, series=False))
-    assert all(item["points"] is None for item in report["cancellation_termination"]["py2027_daily_activity"].values())
+def test_missing_month_value_draws_no_bar():
+    svg = ex.grouped_vbar_svg(["2025-10", "2025-11"], [("a", "#000", {"2025-10": 5, "2025-11": None})])
+    assert svg.count("<rect") == 2  # one bar + one legend swatch
 
 
-def test_findings_are_factual_without_causal_language(tmp_path):
-    findings = " ".join(ex.build_report(evidence(tmp_path))["key_findings"]).lower()
-    assert "950,000" in findings and "900,000" in findings
-    for word in ("renewal", "migration", "bulk load", "because", "caused", "issuer", "behavior", "behaviour"):
-        assert word not in findings
+def test_daily_chart_only_with_series(tmp_path):
+    assert ex.SERIES_UNAVAILABLE in ex.daily_chart(report_for(tmp_path, series={}, with_series_table=False))
+    assert "<svg" in ex.daily_chart(report_for(tmp_path))
 
 
-def test_summary_statement_and_observation_time(tmp_path):
-    summary = ex.build_report(evidence(tmp_path))["executive_summary"]
-    assert summary["statement"] == ex.SUMMARY_STATEMENT
-    assert summary["py2027_observed_at_utc"] == "2026-11-08T12:00:00+00:00"
+# --- safety -------------------------------------------------------------------------------
 
-
-def test_guards_reject_pii_and_auth(tmp_path):
+def test_guards_reject_pii_and_auth():
     with pytest.raises(ComparisonOutputError):
         ex.guard({"enrollee_id": 1})
-    for key in ("cookie", "Authorization", "token", "headers"):
+    for key in ("cookie", "Authorization", "token", "headers", "csrf", "password", "body"):
         with pytest.raises(ex.ExecutiveOutputError):
             ex.guard({"nested": [{key: "x"}]})
 
 
 def test_output_contains_no_pii_or_auth(tmp_path):
-    report = ex.build_report(evidence(tmp_path))
-    json_path, html_path = ex.write_report(report, tmp_path / "out")
+    json_path, html_path = ex.write_report(report_for(tmp_path), tmp_path / "out")
     text = (json_path.read_text(encoding="utf-8") + html_path.read_text(encoding="utf-8")).lower()
-    for token in ('"enrollee_id"', '"enrollment_id"', "cookie", "authorization", "bearer"):
+    for token in ('"enrollee_id"', '"enrollment_id"', "cookie", "authorization", "bearer", "x-xsrf"):
         assert token not in text
-    assert "<svg" in text and "diagnostic" in text and "py2027_only" in text
+
+
+def test_artifact_fallback_path_is_never_live(tmp_path, monkeypatch):
+    monkeypatch.setattr(ex, "PHASE_6B_REPORT", tmp_path / "missing.json")
+    monkeypatch.setattr(ex, "VALIDATION_REPORT", tmp_path / "missing2.json")
+    monkeypatch.setattr(ex, "PHASE_6D_REPORT", tmp_path / "missing3.json")
+    make_history(tmp_path / "h.sqlite3")
+    report = ex.build_report(ex.model_from_artifacts(tmp_path / "h.sqlite3"))
+    assert report["executive_summary"]["py2027"]["freshness"] == ex.STALE
+    assert report["executive_summary"]["py2026"]["freshness"] == ex.UNAVAILABLE
+    assert all(row["freshness"] != ex.LIVE for row in report["py2027_current_snapshot"])

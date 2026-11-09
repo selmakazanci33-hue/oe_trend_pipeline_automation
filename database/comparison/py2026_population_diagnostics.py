@@ -893,7 +893,8 @@ def _text(value) -> str:
     return "N/A" if value is None else str(value)
 
 
-def main() -> int:
+def retrieve_live() -> tuple[dict, bool]:
+    """(report, connected). One read-only aggregate pass over the approved connection layer."""
     definition = load_definition()
     evidence = {"failures": [], "skipped": [], "definition_loaded": definition is not None}
     try:
@@ -907,7 +908,11 @@ def main() -> int:
             evidence = collect(DatabaseClient(connection), definition)
     except DatabaseError as exc:
         evidence["failures"].append({"step": "database", "error": str(exc)})
-    report = build_report(evidence)
+    return build_report(evidence), evidence.get("columns") is not None
+
+
+def main() -> int:
+    report, _ = retrieve_live()
     json_path, html_path = write_report(report)
     print_summary(report)
     print(f"Wrote: {json_path}")

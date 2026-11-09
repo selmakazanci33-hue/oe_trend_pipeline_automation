@@ -177,9 +177,15 @@ def daily_series_row(candidate: CancellationCandidate, payload: Mapping[str, Any
         return RuntimeValue(candidate.metric_id, candidate.discovery_label, RV_VALIDATION_FAILED,
                             reason="Response reports an error", **common)
     semantics = f"{summary.first_period} → {summary.last_period} ({summary.time_points} source dates)"
+    from metrics.source_series import extract_source_points
+    try:
+        points = tuple(extract_source_points(structure, body_text, binding.title))
+    except ValueError:
+        points = ()
     return RuntimeValue(
         candidate.metric_id, candidate.discovery_label, RV_SERIES_EXTRACTED,
-        reason=None, date_semantics=semantics, series_point_count=summary.time_points, **common,
+        reason=None, date_semantics=semantics, series_point_count=summary.time_points,
+        series_points=points, **common,
     )
 
 
