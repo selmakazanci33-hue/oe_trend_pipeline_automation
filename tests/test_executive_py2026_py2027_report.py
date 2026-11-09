@@ -12,8 +12,9 @@ OLD_AT = "2026-11-01T12:00:00+00:00"
 
 def make_history(path, with_series=True):
     connection = sqlite3.connect(path)
-    connection.execute("CREATE TABLE metric_snapshots (run_id TEXT, metric_id TEXT, metric_value REAL, plan_year INT, "
-                       "retrieved_at_utc TEXT, retrieval_status TEXT)")
+    connection.execute("CREATE TABLE metric_snapshots (id INTEGER PRIMARY KEY, run_id TEXT, metric_id TEXT, "
+                       "metric_value REAL, plan_year INT, retrieved_at_utc TEXT, snapshot_slot_utc TEXT, source TEXT, "
+                       "retrieval_status TEXT)")
     rows = [
         ("r0", "currently_enrolled_people", 800000, "2026-10-30T12:00:00+00:00"),
         ("r1", "currently_enrolled_people", 900000, OLD_AT),
@@ -24,7 +25,10 @@ def make_history(path, with_series=True):
         ("r1", "active_enrolled", 1, OLD_AT),
         ("r1", "passive_enrolled", 1, OLD_AT),
     ]
-    connection.executemany("INSERT INTO metric_snapshots VALUES (?, ?, ?, 2027, ?, 'VALIDATED')", rows)
+    connection.executemany(
+        "INSERT INTO metric_snapshots (run_id, metric_id, metric_value, plan_year, retrieved_at_utc, "
+        "snapshot_slot_utc, source, retrieval_status) VALUES (?, ?, ?, 2027, ?, substr(?, 1, 13), 'Sisense', "
+        "'VALIDATED')", [(run, metric, value, at, at) for run, metric, value, at in rows])
     if with_series:
         connection.execute("CREATE TABLE source_series_points (id INTEGER PRIMARY KEY, metric_id TEXT, source_date TEXT, "
                            "time_grain TEXT, date_semantics TEXT, value INT, definition_fingerprint TEXT, "
@@ -46,8 +50,11 @@ def phase_6b(scale=1):
         "percent_effectuated": {"per_candidate": [{"candidate_id": "CE1", "ratio": 0.9}]},
         "identifier_behavior": {"distinct_people": 1320502, "distinct_policies": 1688696},
         "status_distributions": {
-            "enrollment_status": [{"status_value": "Enrolled", "row_count": 5, "distinct_people": 4,
-                                   "distinct_policies": 3}],
+            "enrollment_status": [
+                {"status_value": "Pending", "row_count": 5, "distinct_people": 11322, "distinct_policies": 3},
+                {"status_value": "Terminated", "row_count": 5, "distinct_people": 596598, "distinct_policies": 3},
+                {"status_value": "Enrolled", "row_count": 5, "distinct_people": 871095, "distinct_policies": 3},
+                {"status_value": "Cancelled", "row_count": 5, "distinct_people": 529245, "distinct_policies": 3}],
             "enrollee_status": None},
         "population_diagnostics": [{"label": "PY2026_LATEST_CANCELLED_POPULATION", "distinct_policies": 200000,
                                     "distinct_people": 150000}],
@@ -243,13 +250,14 @@ def test_management_view_uses_dash_not_zero(tmp_path):
 def test_charts_render_when_values_exist(tmp_path):
     report = report_for(tmp_path)
     html_text = ex.render_html(report)
-    assert html_text.count("<svg") == 5
-    assert ex.CE_CHART_TITLE in html_text and ex.CE_CHART_STATUS in html_text
+    # trend, activity, CE, status population, NAP, funnel, monthly people + policies, daily
+    assert html_text.count("<svg") == 9
+    assert ex.CE_YOY_TITLE in html_text and ex.CE_CHART_STATUS in html_text
     assert "865,946 – 1,000,000" in ex.ce_chart(report) and "950,000" in ex.ce_chart(report)
     monthly = ex.monthly_chart(report)
     assert "PY2026 Enrollment Lifecycle Activity by Month" in monthly and ex.OE_LABEL in monthly
     assert ex.MONTHLY_FOOTNOTE in monthly
-    for month in ("2025-10", "2025-11", "2025-12", "2026-01"):
+    for month in ("Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026"):
         assert month in monthly
     assert "http://" not in html_text and "https://" not in html_text and "<script" not in html_text
 

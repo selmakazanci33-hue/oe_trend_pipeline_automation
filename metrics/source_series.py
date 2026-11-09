@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from metrics.date_labels import valid_date_label
 from metrics.catalog import CANCELLATION_CANDIDATES, KIND_DAILY_POLICY_SERIES, KIND_PEOPLE_AGGREGATE
 from reporting.series_semantics import CURRENTLY_ENROLLED_SNAPSHOT_TREND, SeriesIdentity, identity_complete
 from sisense.discovery import WidgetStructure, normalize_label
@@ -51,8 +52,13 @@ def production_daily_chart_allowed(identity: SeriesIdentity) -> bool:
     return True
 
 
-def extract_source_points(structure: WidgetStructure, body_text: str, measure_title: str) -> list[tuple[str, int]]:
-    """Source-date points for one exact measure title. Position is not a binding."""
+def extract_source_points(structure: WidgetStructure, body_text: str,
+                          measure_title: str) -> list[tuple[str | None, int]]:
+    """Source-date points for one exact measure title. Position is not a binding.
+
+    The date is None when no cell representation is a provable calendar date;
+    the point is then an ordered observation only.
+    """
     date_indexes = [index for index, column in enumerate(structure.columns) if column.is_date]
     if len(date_indexes) != 1:
         raise ValueError("Daily series requires exactly one date dimension")
@@ -79,16 +85,14 @@ def extract_source_points(structure: WidgetStructure, body_text: str, measure_ti
     return points
 
 
-def _source_date(cell: Any) -> str:
+def _source_date(cell: Any) -> str | None:
+    """Raw ``data`` first (ISO from the datasource), then display ``text``; only a valid calendar date is kept."""
     if not isinstance(cell, Mapping):
         raise ValueError("Source date is missing")
-    text = cell.get("text")
-    if isinstance(text, str) and text:
-        return text
-    data = cell.get("data")
-    if isinstance(data, str) and data:
-        return data
-    raise ValueError("Source date is missing")
+    data, text = cell.get("data"), cell.get("text")
+    if not (isinstance(data, str) and data) and not (isinstance(text, str) and text):
+        raise ValueError("Source date is missing")
+    return valid_date_label(data) or valid_date_label(text)
 
 
 def source_series_figure(points: list[tuple[str, int]]) -> dict[str, Any] | None:

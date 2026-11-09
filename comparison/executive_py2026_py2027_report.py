@@ -24,6 +24,7 @@ from pathlib import Path
 
 from comparison.currently_enrolled import OUTPUT_DIR, guard_no_pii
 from comparison.lifecycle import resolve_history_path
+from metrics.date_labels import valid_date_label
 
 REPORTS_DIR = OUTPUT_DIR.parent
 EXECUTIVE_DIR = REPORTS_DIR / "executive"
@@ -66,11 +67,29 @@ NAP_FOOTER = "Lifecycle measures; no defensible PY2026 equivalent."
 OE_LABEL = "OE_LIFECYCLE_ALIGNMENT_DIAGNOSTIC"
 ANCHOR_STATEMENT = "Official OE start anchor not proven; calendar-date alignment only."
 MONTHLY_FOOTNOTE = "Activity/cohort dates; not historical population snapshots."
-CE_CHART_TITLE = "Currently Enrolled — PY2026 Diagnostic Range vs PY2027"
 CE_CHART_STATUS = "DIAGNOSTIC — not production comparable"
 CANCEL_STATEMENT = ("PY2026 is latest-state population evidence; PY2027 is daily last-update activity. "
                     "They are different semantic families.")
 SERIES_UNAVAILABLE = "Daily activity series unavailable for this run"
+ORDERED_DAILY = "Ordered daily observations — calendar labels unavailable"
+SAME_PERIOD_TITLE = "PY2026 vs PY2027 — Same-Period Trend Comparison"
+CE_YOY_TITLE = "Currently Enrolled — PY2026 vs PY2027"
+CLOSEST_LABEL = "Closest diagnostic scenario — not selected as official"
+TREND_TITLE = "Currently Enrolled — Same-Cutoff Trend (validated snapshots)"
+PY2026_POPULATION_SERIES_UNAVAILABLE = "PY2026 historical population series unavailable"
+ACTIVITY_TITLE = "OE Same-Period Activity — Enrollment Created / Confirmed (cumulative distinct people)"
+ACTIVITY_PY2027_UNAVAILABLE = "Comparable PY2027 enrollment-activity series not available from current dashboard metrics."
+MTD_UNAVAILABLE = "Comparable MTD series unavailable"
+MONTH_TO_DATE = "MONTH_TO_DATE"
+FULL_MONTH = "FULL_MONTH"
+STATUS_POP_TITLE = "PY2026 Latest-State Enrollment Status — Distinct People"
+PY2027_STATUS_POP_UNAVAILABLE = ("PY2027 equivalent status-population metrics are not currently available from the "
+                                 "verified dashboard metrics.")
+STATUS_ORDER = ("Enrolled", "Cancelled", "Terminated", "Pending")
+OE_EMPHASIS_FROM = "2025-11"
+# PY2027 metrics proven compatible with PY2026 enrollment create/confirmation activity.
+# Empty under Phase 6D (NEW = OTHER_LIFECYCLE_CLASS, NO_ACTIVITY_BRIDGE).
+COMPATIBLE_PY2027_ACTIVITY_METRICS: frozenset[str] = frozenset()
 DASH = "—"
 
 CE = "currently_enrolled_people"
@@ -133,17 +152,23 @@ def read_history(path: Path | None) -> dict:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if "metric_snapshots" in tables:
             out["available"] = True
-            for metric_id, value, retrieved in connection.execute(
-                    "SELECT metric_id, metric_value, retrieved_at_utc FROM metric_snapshots "
-                    "WHERE plan_year = 2027 AND retrieval_status = 'VALIDATED' ORDER BY retrieved_at_utc"):
+            seen = set()
+            for metric_id, value, plan_year, retrieved, slot, source, state in connection.execute(
+                    "SELECT metric_id, metric_value, plan_year, retrieved_at_utc, snapshot_slot_utc, source, "
+                    "retrieval_status FROM metric_snapshots WHERE plan_year = 2027 AND retrieval_status = 'VALIDATED' "
+                    "ORDER BY retrieved_at_utc, id"):
+                if (metric_id, slot) in seen:
+                    continue
+                seen.add((metric_id, slot))
                 out["snapshots"].setdefault(metric_id, []).append(
-                    {"value": _number(value), "retrieved_at_utc": retrieved})
+                    {"value": _number(value), "plan_year": plan_year, "retrieved_at_utc": retrieved,
+                     "snapshot_slot_utc": slot, "source": source, "validation_state": state})
         if "source_series_points" in tables:
             for metric_id, day, value, observed in connection.execute(
                     "SELECT metric_id, source_date, value, observed_at_utc FROM source_series_points "
                     "WHERE time_grain = 'days' ORDER BY source_date, id"):
                 points = out["series"].setdefault(metric_id, {})
-                points[day] = {"date": day, "value": int(value), "observed_at_utc": observed}
+                points[day] = {"date": valid_date_label(day), "value": int(value), "observed_at_utc": observed}
     finally:
         connection.close()
     out["series"] = {key: list(points.values()) for key, points in out["series"].items()}
@@ -210,7 +235,8 @@ def py2027_model(live_values: dict, live_series: dict, history: dict, validation
     for metric_id, _ in SERIES_IDS:
         live = live_series.get(metric_id) if live_ok else None
         if live and live.get("points"):
-            series[metric_id] = {"points": list(live["points"]), "retrieved_at": live["retrieved_at"],
+            points = [{"date": valid_date_label(p.get("date")), "value": p["value"]} for p in live["points"]]
+            series[metric_id] = {"points": points, "retrieved_at": live["retrieved_at"],
                                  "source": f"{PY2027_SOURCE} (natural dashboard response)", "freshness": LIVE}
         else:
             series[metric_id] = _fallback_series(metric_id, history)
@@ -402,8 +428,17 @@ def cancellation_section(model: dict) -> dict:
                     "freshness": model["py2026"]["freshness"], "retrieved_at": model["py2026"]["retrieved_at"],
                     "source": model["py2026"]["source"]}
                    for item in report.get("population_diagnostics") or []]
-    activity = {mid: {"label": label, "comparison_status": PY2027_ONLY, **model["py2027"]["series"][mid]}
-                for mid, label in SERIES_IDS}
+    activity = {}
+    for mid, label in SERIES_IDS:
+        item = dict(model["py2027"]["series"][mid])
+        if item.get("points"):
+            item["points"] = [{"order": i, "date": valid_date_label(p.get("date")), "value": p["value"]}
+                              for i, p in enumerate(item["points"], 1)]
+            calendar = daily_axis(item["points"])[1]
+            item["axis"] = "CALENDAR_DATE" if calendar else "ORDERED_OBSERVATION"
+            if not calendar:
+                item["axis_note"] = ORDERED_DAILY
+        activity[mid] = {"label": label, "comparison_status": PY2027_ONLY, **item}
     return {"statement": CANCEL_STATEMENT, "py2026_population": populations or None,
             "py2027_daily_activity": activity, "yoy_difference": "Not computed (different semantic families)."}
 
@@ -536,6 +571,160 @@ CAVEATS = (
 )
 
 
+# --- same-period comparison ---------------------------------------------------------------
+
+def shift_plan_year(iso_date: str | None, years: int = -1) -> str | None:
+    """Corresponding calendar date one plan year earlier (Feb 29 -> Feb 28)."""
+    label = valid_date_label(iso_date)
+    if label is None:
+        return None
+    year, month, day = (int(part) for part in label.split("-"))
+    if month == 2 and day == 29:
+        day = 28
+    return f"{year + years:04d}-{month:02d}-{day:02d}"
+
+
+def closest_scenario(population: dict) -> dict | None:
+    """Context only: smallest absolute CE difference. Closeness is not semantic evidence and selects nothing."""
+    rows = [r for r in population["rows"]
+            if r["metric"].startswith("Currently Enrolled vs") and r["absolute_difference"] is not None]
+    if not rows:
+        return None
+    best = min(rows, key=lambda r: abs(r["absolute_difference"]))
+    return {"candidate_id": best["metric"].rsplit(" ", 1)[-1], "py2026_value": best["py2026_value"],
+            "py2027_value": best["py2027_value"], "absolute_difference": best["absolute_difference"],
+            "percent_difference": best["percent_difference"], "label": CLOSEST_LABEL,
+            "selected_as_official": False, "comparison_status": DIAGNOSTIC}
+
+
+def ce_trend(model: dict) -> dict:
+    """PY2027 validated Currently Enrolled snapshots by calendar date, paired with PY2026 only if a population exists."""
+    by_day: dict[str, dict] = {}
+    for point in model["history"].get("snapshots", {}).get(CE) or []:
+        day = valid_date_label(str(point.get("retrieved_at_utc") or "")[:10])
+        if day is not None:
+            by_day[day] = {"value": point["value"], "retrieved_at": point["retrieved_at_utc"], "freshness": HISTORICAL}
+    live = model["py2027"]["metrics"][CE]
+    live_day = valid_date_label(str(live.get("retrieved_at") or "")[:10])
+    if live["freshness"] == LIVE and live_day is not None:
+        by_day[live_day] = {"value": live["value"], "retrieved_at": live["retrieved_at"], "freshness": LIVE}
+    report = model["py2026"]["report"] or {}
+    py2026_series = {valid_date_label(p.get("date")): p.get("distinct_people")
+                     for p in report.get("historical_population_series") or [] if valid_date_label(p.get("date"))}
+    rows = []
+    for day in sorted(by_day):
+        item = by_day[day]
+        py26_day = shift_plan_year(day)
+        py26 = py2026_series.get(py26_day)
+        rows.append({"py2027_date": day, "py2026_date": py26_day, "py2027_value": item["value"],
+                     "py2027_freshness": item["freshness"], "py2027_retrieved_at": item["retrieved_at"],
+                     "py2026_value": py26,
+                     **difference(py26, item["value"], DIAGNOSTIC if py26 is not None else PY2027_ONLY)})
+    paired = any(r["py2026_value"] is not None for r in rows)
+    return {"rows": rows, "py2026_available": paired,
+            "comparison_status": DIAGNOSTIC if paired else PY2027_ONLY,
+            "note": None if paired else PY2026_POPULATION_SERIES_UNAVAILABLE,
+            "alignment": "PY2026 date D vs PY2027 date D shifted one plan year (calendar alignment only)."}
+
+
+def activity_comparison(model: dict) -> dict:
+    """Activity/cohort family only. PY2027 is added only for a metric proven compatible (none under Phase 6D)."""
+    temporal = temporal_section(model)
+    fields = {}
+    if temporal.get("available"):
+        for name in ("enrollment_create_date", "enrollment_confirmation_date"):
+            fields[name] = [{"through": c.get("through"), "distinct_people": c.get("distinct_people")}
+                            for c in temporal["fields"][name].get("cumulative") or []]
+    compatible = [mid for mid in (model["py2027"].get("activity_series") or {})
+                  if mid in COMPATIBLE_PY2027_ACTIVITY_METRICS]
+    return {"py2026": fields, "py2027_series": None if not compatible else
+            {mid: model["py2027"]["activity_series"][mid] for mid in compatible},
+            "label": OE_LABEL, "comparison_status": DIAGNOSTIC if compatible else PY2026_ONLY,
+            "note": None if compatible else ACTIVITY_PY2027_UNAVAILABLE,
+            "excluded_py2027_metrics": {NEW: f"Phase 6D: {NAP_NEW_CLASS}, {NAP_BRIDGE}"},
+            "freshness": temporal.get("freshness"), "retrieved_at": temporal.get("retrieved_at")}
+
+
+def monthly_comparison(py2026_monthly: dict, py2027_monthly: dict, compatible: bool,
+                       py2026_mtd: dict | None = None) -> dict:
+    """Month | PY2026 | PY2027. A partial PY2027 month pairs only with a PY2026 MTD value through the same day.
+
+    ``py2027_monthly``: {"YYYY-MM": {"value", "complete": bool, "through_day": int}}.
+    ``py2026_mtd``: {("YYYY-MM", day): value}. A full PY2026 month is never paired with a partial month.
+    """
+    if not py2027_monthly or not compatible:
+        return {"available": False, "rows": [], "message": MTD_UNAVAILABLE,
+                "comparison_status": NOT_COMPARABLE if py2027_monthly else UNAVAILABLE}
+    rows = []
+    for month in sorted(py2027_monthly):
+        item = py2027_monthly[month]
+        year, mon = (int(part) for part in month.split("-"))
+        prior = f"{year - 1:04d}-{mon:02d}"
+        if item.get("complete"):
+            period, py26 = FULL_MONTH, py2026_monthly.get(prior)
+        else:
+            period = MONTH_TO_DATE
+            py26 = (py2026_mtd or {}).get((prior, item.get("through_day")))
+        status = DIAGNOSTIC if py26 is not None else PY2027_ONLY
+        rows.append({"py2027_month": month, "py2026_month": prior, "period": period,
+                     "through_day": None if period == FULL_MONTH else item.get("through_day"),
+                     "py2026_value": py26, "py2027_value": item.get("value"), "comparison_status": status,
+                     **difference(py26, item.get("value"), status)})
+    has_pair = any(r["py2026_value"] is not None for r in rows)
+    return {"available": has_pair, "rows": rows, "message": None if has_pair else MTD_UNAVAILABLE,
+            "comparison_status": DIAGNOSTIC if has_pair else PY2027_ONLY}
+
+
+def same_date_table(model: dict, population: dict, range_: dict, closest: dict | None) -> list[dict]:
+    metrics = model["py2027"]["metrics"]
+    py26_asof = (f"PY2026 latest-state ({model['py2026']['freshness']}, {model['py2026']['retrieved_at'] or 'N/A'})")
+
+    def asof(item):
+        return f"PY2027 {item['freshness']} {item['retrieved_at'] or 'N/A'}"
+
+    pe_rows = [r for r in population["rows"] if r["metric"].startswith("% Effectuated vs")]
+    pe_values = [r["py2026_value"] for r in pe_rows if r["py2026_value"] is not None]
+    pe_diffs = [r["absolute_difference"] for r in pe_rows if r["absolute_difference"] is not None]
+    ce26 = DASH if range_["low"] is None else f"{fmt(range_['low'])} – {fmt(range_['high'])}"
+    rows = [{"metric": "Currently Enrolled", "py2026": ce26, "py2027": fmt(metrics[CE]["value"]),
+             "difference": DASH if closest is None else f"{closest['absolute_difference']:+,} ({CLOSEST_LABEL})",
+             "status": DIAGNOSTIC, "as_of": f"{py26_asof}; {asof(metrics[CE])}"},
+            {"metric": "% Effectuated",
+             "py2026": DASH if not pe_values else (
+                 fmt(min(pe_values), "ratio") if min(pe_values) == max(pe_values)
+                 else f"{fmt(min(pe_values), 'ratio')} – {fmt(max(pe_values), 'ratio')}"),
+             "py2027": fmt(metrics[PE]["value"], "ratio"),
+             "difference": DASH if not pe_diffs else (f"{min(pe_diffs):+.2f} pp" if min(pe_diffs) == max(pe_diffs)
+                                                     else f"{min(pe_diffs):+.2f} to {max(pe_diffs):+.2f} pp"),
+             "status": DIAGNOSTIC, "as_of": f"{py26_asof}; {asof(metrics[PE])}"}]
+    for mid, label, verification, kind in PY2027_METRICS[2:]:
+        if mid == APPLICANTS:
+            continue
+        rows.append({"metric": label, "py2026": DASH, "py2027": fmt(metrics[mid]["value"], kind),
+                     "difference": DASH, "status": PY2027_ONLY, "as_of": asof(metrics[mid])})
+    return rows
+
+
+def status_population_chart_data(model: dict) -> dict:
+    rows = (status_populations(model).get("enrollment_status")) or []
+    by_label = {str(r.get("status_value")): r for r in rows if r.get("status_value") is not None}
+    ordered = [label for label in STATUS_ORDER if label in by_label]
+    ordered += sorted(label for label in by_label if label not in STATUS_ORDER)
+    return {"title": STATUS_POP_TITLE, "comparison_status": PY2026_ONLY, "measure": "distinct_people",
+            "bars": [{"status": label, "distinct_people": by_label[label].get("distinct_people")} for label in ordered],
+            "freshness": model["py2026"]["freshness"] if rows else UNAVAILABLE,
+            "retrieved_at": model["py2026"]["retrieved_at"] if rows else None,
+            "py2027_counterpart": PY2027_STATUS_POP_UNAVAILABLE}
+
+
+def daily_axis(points: list[dict]) -> tuple[list[str], bool]:
+    """Calendar labels only when every point carries a valid ISO date; otherwise Day 1, Day 2, ..."""
+    dates = [valid_date_label(p.get("date")) for p in points]
+    if points and all(dates):
+        return dates, True
+    return [f"Day {index}" for index in range(1, len(points) + 1)], False
+
+
 def build_report(model: dict) -> dict:
     population = population_comparison(model)
     range_ = ce_range(model)
@@ -543,9 +732,10 @@ def build_report(model: dict) -> dict:
     temporal = temporal_section(model)
     cancellation = cancellation_section(model)
     apps = applications_section(model)
+    closest = closest_scenario(population)
     report = {
         "report_kind": "EXECUTIVE_PY2026_PY2027_COMPARISON",
-        "phase": "7B",
+        "phase": "7C",
         "generated_at_utc": model["generated_at_utc"],
         "executive_summary": {
             "data_refreshed": model["generated_at_utc"],
@@ -557,6 +747,19 @@ def build_report(model: dict) -> dict:
         "kpis": [{"metric_id": mid, "label": label, "value_kind": kind, **model["py2027"]["metrics"][mid]}
                  for mid, label, _, kind in PY2027_METRICS if mid in (CE, PE, STARTED, SUBMITTED)],
         "currently_enrolled_range": range_,
+        "closest_scenario": closest,
+        "same_period": {
+            "currently_enrolled_trend": ce_trend(model),
+            "activity": activity_comparison(model),
+            "monthly": monthly_comparison(
+                {m["month"]: m.get("distinct_people") for m in
+                 ((temporal.get("fields") or {}).get("enrollment_create_date", {}).get("monthly") or [])},
+                model["py2027"].get("activity_monthly") or {},
+                bool(COMPATIBLE_PY2027_ACTIVITY_METRICS & set(model["py2027"].get("activity_series") or {}))),
+        },
+        "same_date_table": same_date_table(model, population, range_, closest),
+        "py2026_status_population_chart": status_population_chart_data(model),
+        "py2027_status_population": {"available": False, "message": PY2027_STATUS_POP_UNAVAILABLE},
         "population_comparison": population,
         "py2026_status_populations": status_populations(model),
         "py2027_current_snapshot": py2027_snapshot(model),
@@ -630,16 +833,102 @@ def hbar_svg(items: list[tuple[str, float, str]], kind: str = "count", width: in
     return f"<svg viewBox='0 0 {width} {height}' width='100%' role='img'>{''.join(parts)}</svg>"
 
 
+def month_label(month: str) -> str:
+    try:
+        return datetime.strptime(month, "%Y-%m").strftime("%b %Y")
+    except (TypeError, ValueError):
+        return str(month)
+
+
+def day_label(iso: str) -> str:
+    try:
+        return datetime.strptime(iso, "%Y-%m-%d").strftime("%b %d")
+    except (TypeError, ValueError):
+        return str(iso)
+
+
+def _legend(series_names: list[tuple[str, str]], y: int, x: int = 56, dashed: set[str] = frozenset()) -> str:
+    parts = []
+    for name, color in series_names:
+        if name in dashed:
+            parts.append(f"<line x1='{x}' y1='{y + 6}' x2='{x + 14}' y2='{y + 6}' stroke='{color}' stroke-width='3' "
+                         f"stroke-dasharray='4 3'/>")
+        else:
+            parts.append(f"<rect x='{x}' y='{y}' width='12' height='12' fill='{color}'/>")
+        parts.append(f"<text x='{x + 18}' y='{y + 10}' class='lbl'>{_e(name)}</text>")
+        x += 28 + 7 * len(name)
+    return "".join(parts)
+
+
+def line_svg(categories: list[str], series: list[tuple[str, str, dict]], labels: dict | None = None,
+             width: int = 960, height: int = 300, kind: str = "count") -> str:
+    """Lines on one shared 0-based axis. Missing points break the line; nothing is drawn as zero."""
+    labels = labels or {}
+    left, right, top, bottom = 64, 24, 28, 64
+    plot_w, plot_h = width - left - right, height - top - bottom
+    values = [v for _, _, data in series for v in data.values() if v is not None]
+    peak = (max(values) if values else 1) * 1.1 or 1
+    step = plot_w / max(1, len(categories) - 1) if len(categories) > 1 else 0
+    xs = {c: left + (i * step if len(categories) > 1 else plot_w / 2) for i, c in enumerate(categories)}
+    parts = []
+    for tick in range(5):
+        value = peak * tick / 4
+        y = top + plot_h - plot_h * tick / 4
+        parts.append(f"<line x1='{left}' y1='{y:.1f}' x2='{width - right}' y2='{y:.1f}' stroke='#f1f5f9'/>"
+                     f"<text x='{left - 6}' y='{y + 4:.1f}' text-anchor='end' class='tick'>"
+                     f"{_e(compact(value) if kind == 'count' else fmt(value, kind))}</text>")
+    every = max(1, len(categories) // 12)
+    for i, c in enumerate(categories):
+        if i % every == 0 or i == len(categories) - 1:
+            parts.append(f"<text x='{xs[c]:.1f}' y='{top + plot_h + 18}' text-anchor='middle' class='tick'>"
+                         f"{_e(labels.get(c, c))}</text>")
+    show_labels = len(categories) <= 16
+    for name, color, data in series:
+        run: list[str] = []
+        segments = []
+        for c in categories:
+            v = data.get(c)
+            if v is None:
+                if run:
+                    segments.append(run)
+                run = []
+                continue
+            run.append(f"{xs[c]:.1f},{top + plot_h - plot_h * v / peak:.1f}")
+        if run:
+            segments.append(run)
+        for seg in segments:
+            if len(seg) > 1:
+                parts.append(f"<polyline points='{' '.join(seg)}' fill='none' stroke='{color}' stroke-width='2.5'/>")
+        present = [c for c in categories if data.get(c) is not None]
+        for c in present:
+            y = top + plot_h - plot_h * data[c] / peak
+            parts.append(f"<circle cx='{xs[c]:.1f}' cy='{y:.1f}' r='3.5' fill='{color}'/>")
+            if show_labels or c == present[-1]:
+                text = compact(data[c]) if kind == "count" else fmt(data[c], kind)
+                parts.append(f"<text x='{xs[c]:.1f}' y='{y - 8:.1f}' text-anchor='middle' class='dl'>{_e(text)}</text>")
+    parts.append(_legend([(n, c) for n, c, _ in series], height - 22, left))
+    return f"<svg viewBox='0 0 {width} {height}' width='100%' role='img'>{''.join(parts)}</svg>"
+
+
 def grouped_vbar_svg(categories: list[str], series: list[tuple[str, str, dict]], width: int = 960,
-                     height: int = 320) -> str:
+                     height: int = 320, labels: dict | None = None, highlight_from: str | None = None,
+                     highlight_text: str = "") -> str:
     """Grouped vertical bars. A category missing a value draws no bar (never a zero bar)."""
+    labels = labels or {}
     left, right, top, bottom = 56, 16, 24, 64
     plot_w, plot_h = width - left - right, height - top - bottom
     values = [v for _, _, data in series for v in data.values() if v is not None]
     peak = max(values) if values else 1
     group_w = plot_w / max(1, len(categories))
     bar_w = min(34.0, group_w * 0.8 / max(1, len(series)))
-    parts = [f"<line x1='{left}' y1='{top + plot_h}' x2='{width - right}' y2='{top + plot_h}' stroke='#cbd5e1'/>"]
+    parts = []
+    if highlight_from is not None:
+        first = next((i for i, c in enumerate(categories) if c >= highlight_from), None)
+        if first is not None:
+            hx = left + first * group_w
+            parts.append(f"<rect x='{hx:.1f}' y='{top}' width='{width - right - hx:.1f}' height='{plot_h}' "
+                         f"fill='#eff6ff'/><text x='{hx + 6:.1f}' y='{top + 12}' class='tick'>{_e(highlight_text)}</text>")
+    parts.append(f"<line x1='{left}' y1='{top + plot_h}' x2='{width - right}' y2='{top + plot_h}' stroke='#cbd5e1'/>")
     for tick in range(5):
         value = peak * tick / 4
         y = top + plot_h - plot_h * tick / 4
@@ -658,12 +947,8 @@ def grouped_vbar_svg(categories: list[str], series: list[tuple[str, str, dict]],
                          f"{_e(compact(value))}</text>")
         cx = left + ci * group_w + group_w / 2
         parts.append(f"<text x='{cx:.1f}' y='{top + plot_h + 18}' text-anchor='middle' class='tick'>"
-                     f"{_e(category)}</text>")
-    legend_x = left
-    for name, color, _ in series:
-        parts.append(f"<rect x='{legend_x}' y='{height - 22}' width='12' height='12' fill='{color}'/>"
-                     f"<text x='{legend_x + 18}' y='{height - 12}' class='lbl'>{_e(name)}</text>")
-        legend_x += 24 + 8 * len(name)
+                     f"{_e(labels.get(category, category))}</text>")
+    parts.append(_legend([(name, color) for name, color, _ in series], height - 22, left))
     return f"<svg viewBox='0 0 {width} {height}' width='100%' role='img'>{''.join(parts)}</svg>"
 
 
@@ -672,7 +957,7 @@ def ce_chart(report: dict) -> str:
     py27 = next(k for k in report["kpis"] if k["metric_id"] == CE)
     caveat = f"<b>{_e(CE_CHART_STATUS)}.</b> {_e(CE_CAVEAT)} {_e(range_['note'])}"
     if range_["low"] is None and py27["value"] is None:
-        return unavailable_card(CE_CHART_TITLE, "Currently Enrolled data unavailable for this run", CE_CHART_STATUS)
+        return unavailable_card(CE_YOY_TITLE, "Currently Enrolled data unavailable for this run", CE_CHART_STATUS)
     width, height, base, top = 640, 300, 250, 30
     peak = max(v for v in (range_["high"], py27["value"]) if v is not None) or 1
     scale = (base - top) / peak
@@ -698,8 +983,19 @@ def ce_chart(report: dict) -> str:
     scenarios = "".join(f"<li>{_e(s['candidate_id'])}: {_e(fmt(s['distinct_people']))}</li>" for s in range_["scenarios"])
     status = (f"{_badge(DIAGNOSTIC)} <b>{_e(CE_CHART_STATUS)}</b> · PY2026 {_fresh(range_['freshness'])} · "
               f"PY2027 {_fresh(py27['freshness'])}")
+    closest = report.get("closest_scenario")
+    headline = ""
+    if range_["low"] is not None:
+        headline = f"<p class='headline'>PY2026 diagnostic range: <b>{_e(fmt(range_['low']))} → {_e(fmt(range_['high']))}</b>"
+        headline += f" &nbsp;·&nbsp; PY2027: <b>{_e(fmt(py27['value']))}</b></p>"
+    if closest is not None:
+        pct = "" if closest["percent_difference"] is None else f" ({closest['percent_difference']:+.2f}%)"
+        diff = f"{closest['absolute_difference']:+,}{pct}"
+        headline += (f"<p class='muted'>{_e(CLOSEST_LABEL)}: {_e(closest['candidate_id'])} "
+                     f"{_e(fmt(closest['py2026_value']))}, difference {_e(diff)}. "
+                     "Mathematical closeness is not evidence of semantic equivalence.</p>")
     footer = caveat + (f"<ul class='scen'>{scenarios}</ul>" if scenarios else "")
-    return _chart(CE_CHART_TITLE, status, svg, footer)
+    return _chart(CE_YOY_TITLE, status, headline + svg, footer)
 
 
 def nap_chart(report: dict) -> str:
@@ -746,17 +1042,27 @@ def monthly_chart(report: dict) -> str:
     temporal = report["oe_temporal_diagnostic"]
     if not temporal.get("available"):
         return unavailable_card(title, "Monthly lifecycle activity unavailable for this run", OE_LABEL)
-    series = []
-    for name, label, color in (("enrollment_create_date", "Enrollment Created — distinct people", BLUE),
-                               ("enrollment_confirmation_date", "Enrollment Confirmed — distinct people", AMBER)):
-        monthly = temporal["fields"][name]["monthly"] or []
-        series.append((label, color, {m["month"]: m.get("distinct_people") for m in monthly}))
-    months = sorted({month for _, _, data in series for month in data})
+    def series_for(measure: str, suffix: str):
+        out = []
+        for name, label, color in (("enrollment_create_date", f"Created {suffix}", BLUE),
+                                   ("enrollment_confirmation_date", f"Confirmed {suffix}", AMBER)):
+            monthly = temporal["fields"][name]["monthly"] or []
+            out.append((label, color, {m["month"]: m.get(measure) for m in monthly}))
+        return out
+
+    people = series_for("distinct_people", "People")
+    months = sorted({month for _, _, data in people for month in data})
     if not months:
         return unavailable_card(title, "Monthly lifecycle activity unavailable for this run", OE_LABEL)
+    labels = {m: month_label(m) for m in months}
+    emphasis = "OE emphasis: November 2025 onward"
     status = f"{_badge(OE_LABEL)} {_fresh(temporal['freshness'])}"
-    return _chart(title, status, grouped_vbar_svg(months, series),
-                  f"{_e(MONTHLY_FOOTNOTE)} {_e(ANCHOR_STATEMENT)}")
+    svg = grouped_vbar_svg(months, people, labels=labels, highlight_from=OE_EMPHASIS_FROM, highlight_text=emphasis)
+    policies = grouped_vbar_svg(months, series_for("distinct_policies", "Policies"), labels=labels,
+                                highlight_from=OE_EMPHASIS_FROM, highlight_text=emphasis)
+    footer = (f"{_e(MONTHLY_FOOTNOTE)} {_e(ANCHOR_STATEMENT)}"
+              f"<details class='inner'><summary>Policies view</summary>{policies}</details>")
+    return _chart(title, status, svg, footer)
 
 
 def daily_chart(report: dict) -> str:
@@ -766,22 +1072,94 @@ def daily_chart(report: dict) -> str:
     if not present:
         return unavailable_card(title, SERIES_UNAVAILABLE, PY2027_ONLY)
     colors = (AMBER, "#dc2626")
-    series = [(label, color, {p["date"]: p["value"] for p in item["points"]})
-              for (label, item), color in zip(present, colors)]
-    dates = []
-    for _, _, data in series:
-        dates += [d for d in data if d not in dates]
+    calendar = all(daily_axis(item["points"])[1] for _, item in present)
+    series = []
+    if calendar:
+        for (label, item), color in zip(present, colors):
+            series.append((label, color, {p["date"]: p["value"] for p in item["points"]}))
+        categories = sorted({d for _, _, data in series for d in data})
+        labels = {d: day_label(d) for d in categories}
+        axis_note = "Daily last-update activity by source date."
+    else:
+        for (label, item), color in zip(present, colors):
+            series.append((label, color, {f"Day {i}": p["value"] for i, p in enumerate(item["points"], 1)}))
+        categories = [f"Day {i}" for i in range(1, max(len(item["points"]) for _, item in present) + 1)]
+        labels = {}
+        axis_note = f"<b>{_e(ORDERED_DAILY)}.</b> Points are shown in observed order only."
     status = f"{_badge(PY2027_ONLY)} " + " ".join(
         f"{_e(label)} {_fresh(item['freshness'])} ({_e(item['retrieved_at'])})" for label, item in present)
     missing = [item["label"] for item in activity.values() if not item["points"]]
-    footer = ("Daily last-update activity by source date. Not compared with PY2026 latest-state populations."
+    footer = (f"{axis_note} Not compared with PY2026 latest-state populations."
               + (f" Not available: {_e(', '.join(missing))}." if missing else ""))
-    return _chart(title, status, grouped_vbar_svg(dates, series), footer)
+    shown_title = title if calendar else f"{title} — {ORDERED_DAILY}"
+    return _chart(shown_title, status, grouped_vbar_svg(categories, series, labels=labels), footer)
 
 
-def charts(report: dict) -> str:
-    return "".join((ce_chart(report), nap_chart(report), funnel_chart(report), monthly_chart(report),
-                    daily_chart(report)))
+def trend_chart(report: dict) -> str:
+    trend = report["same_period"]["currently_enrolled_trend"]
+    rows = trend["rows"]
+    if not rows:
+        return unavailable_card(TREND_TITLE, "No validated PY2027 Currently Enrolled snapshots yet", PY2027_ONLY)
+    categories = [r["py2027_date"] for r in rows]
+    series = [("PY2027 Currently Enrolled (validated snapshots)", BLUE,
+               {r["py2027_date"]: r["py2027_value"] for r in rows})]
+    if trend["py2026_available"]:
+        series.append(("PY2026 population at same cutoff (date − 1 year)", GREY,
+                       {r["py2027_date"]: r["py2026_value"] for r in rows}))
+    labels = {d: day_label(d) for d in categories}
+    status = _badge(trend["comparison_status"]) + " " + " ".join(
+        _fresh(f) for f in sorted({r["py2027_freshness"] for r in rows}))
+    footer = _e(trend["alignment"]) + (f" <b>{_e(trend['note'])}.</b>" if trend["note"] else "")
+    if len(rows) == 1:
+        footer += " One validated observation so far; the trend grows with each successful run."
+    return _chart(TREND_TITLE, status, line_svg(categories, series, labels), footer)
+
+
+def activity_chart(report: dict) -> str:
+    activity = report["same_period"]["activity"]
+    fields = activity["py2026"]
+    names = (("enrollment_create_date", "PY2026 Enrollment Created — cumulative people", BLUE),
+             ("enrollment_confirmation_date", "PY2026 Enrollment Confirmed — cumulative people", AMBER))
+    series = [(label, color, {c["through"]: c["distinct_people"] for c in fields.get(name) or []})
+              for name, label, color in names if fields.get(name)]
+    categories = sorted({d for _, _, data in series for d in data if d})
+    if not categories:
+        return unavailable_card(ACTIVITY_TITLE, "PY2026 activity cutoffs unavailable for this run", OE_LABEL)
+    for mid, item in (activity["py2027_series"] or {}).items():
+        series.append((f"PY2027 {mid}", TEAL, {p["date"]: p["value"] for p in item.get("points") or []}))
+    status = f"{_badge(OE_LABEL)} {_badge(activity['comparison_status'])} {_fresh(activity['freshness'])}"
+    footer = (f"{_e(MONTHLY_FOOTNOTE)} {_e(ANCHOR_STATEMENT)}"
+              + (f" <b>{_e(activity['note'])}</b>" if activity["note"] else ""))
+    return _chart(ACTIVITY_TITLE, status, line_svg(categories, series, {d: day_label(d) for d in categories}), footer)
+
+
+def mtd_card(report: dict) -> str:
+    monthly = report["same_period"]["monthly"]
+    title = "Monthly / Month-to-Date Comparison"
+    if not monthly["available"]:
+        return unavailable_card(title, monthly["message"], monthly["comparison_status"])
+    rows = _table(monthly["rows"], (("py2026_month", "PY2026 month"), ("py2027_month", "PY2027 month"),
+                                    ("period", "Period"), ("through_day", "Through day"),
+                                    ("py2026_value", "PY2026"), ("py2027_value", "PY2027"),
+                                    ("absolute_difference", "Difference"), ("comparison_status", "Status")),
+                  {"py2026_value": lambda v, r: _e(fmt(v)), "py2027_value": lambda v, r: _e(fmt(v)),
+                   "absolute_difference": lambda v, r: DASH if v is None else _e(f"{v:+,}")})
+    return f"<div class='chart'><h3>{_e(title)}</h3>{rows}</div>"
+
+
+def status_population_chart(report: dict) -> str:
+    data = report["py2026_status_population_chart"]
+    items = [(b["status"], b["distinct_people"], color) for b, color in
+             zip(data["bars"], (TEAL, AMBER, "#dc2626", GREY) + (GREY,) * 20) if b["distinct_people"] is not None]
+    if not items:
+        return unavailable_card(STATUS_POP_TITLE, "PY2026 status population unavailable for this run", PY2026_ONLY)
+    status = f"{_badge(PY2026_ONLY)} {_fresh(data['freshness'])}"
+    return _chart(STATUS_POP_TITLE, status, hbar_svg(items),
+                  "Latest-state population by enrollment status (distinct people). No PY2027 counterpart.")
+
+
+def py2027_status_card(report: dict) -> str:
+    return unavailable_card("PY2027 Status Population", report["py2027_status_population"]["message"], PY2027_ONLY)
 
 
 # --- rendering ----------------------------------------------------------------------------
@@ -834,6 +1212,8 @@ CSS = (
     ".fresh.historical_snapshot{background:#e0f2fe;color:#075985}.fresh.unavailable{background:#f1f5f9;color:#64748b}"
     "details{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 16px;margin-bottom:12px}"
     "summary{cursor:pointer;font-weight:600}.muted{color:#64748b;font-size:12px}"
+    "h2.major{font-size:20px;border-left:4px solid #2563eb;padding-left:10px;margin-top:26px}"
+    ".headline{font-size:15px;margin:4px 0}details.inner{border:none;padding:6px 0;margin:6px 0 0}"
 )
 
 
@@ -908,12 +1288,30 @@ def render_html(report: dict) -> str:
         ("Data quality / caveats", "<ul>" + "".join(f"<li>{_e(c)}</li>" for c in report["caveats"]) + "</ul>"),
     ]
     detail_html = "".join(f"<details><summary>{_e(title)}</summary>{body}</details>" for title, body in details)
+    same_date = _table(report["same_date_table"], (
+        ("metric", "Metric"), ("py2026", "PY2026"), ("py2027", "PY2027"), ("difference", "Difference"),
+        ("status", "Status"), ("as_of", "As-of / Period")))
+    body = "".join((
+        _kpis(report),
+        f"<h2 class='major'>{_e(SAME_PERIOD_TITLE)}</h2>",
+        "<p class='muted'>PY2026 and PY2027 share an axis only where grain, metric meaning and time semantics "
+        "are compatible. Otherwise each year is shown in its own panel.</p>",
+        trend_chart(report), activity_chart(report), mtd_card(report),
+        "<h2>Currently Enrolled comparison</h2>", ce_chart(report),
+        f"<h2>Same-Date / Same-Cutoff Comparison</h2><div class='chart'>{same_date}</div>",
+        "<h2>PY2026 Status Population</h2>", status_population_chart(report), py2027_status_card(report),
+        "<h2>PY2027 New / Active / Passive</h2>", nap_chart(report),
+        "<h2>PY2027 Application Funnel</h2>", funnel_chart(report),
+        "<h2>PY2026 Monthly Enrollment Lifecycle Activity</h2>", monthly_chart(report),
+        "<h2>PY2027 Cancellation / Termination Daily Activity</h2>", daily_chart(report),
+        f"<h2>Management View</h2>{management}",
+        f"<p class='muted'>production_comparable = false. {_e(SUMMARY_STATEMENT)}</p>",
+        f"<h2>Detailed Diagnostics / Caveats</h2>{detail_html}",
+    ))
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>Georgia Access — PY2026 vs PY2027</title><style>{CSS}</style></head><body>{header}<main>"
-            f"{_kpis(report)}{charts(report)}<h2>Management comparison</h2>{management}"
-            f"<p class='muted'>production_comparable = false. {_e(SUMMARY_STATEMENT)}</p>"
-            f"<h2>Detailed diagnostics and caveats</h2>{detail_html}</main></body></html>")
+            f"{body}</main></body></html>")
 
 
 def _temporal_html(temporal: dict, count_fmt) -> str:
