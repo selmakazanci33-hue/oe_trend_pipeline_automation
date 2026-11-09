@@ -30,11 +30,11 @@ def test_ce_scenarios_not_prominent_but_in_technical_details(tmp_path):
 def test_currently_enrolled_and_effectuated_have_no_numeric_py2026_difference(tmp_path):
     report = report_for(tmp_path)
     overview = eh.plan_year_overview(report)
-    assert eh.ALIGNMENT_TEXT in overview
-    assert eh.CE_CONTEXT in overview
+    assert eh.NOT_COMPARABLE_TEXT in overview
+    assert eh.ALIGNMENT_TEXT not in overview and eh.CE_CONTEXT not in overview
     assert "-68,184" not in overview and "+68,184" not in overview
     ce_cells = overview.split("Currently Enrolled", 1)[1].split("% Effectuated", 1)[0]
-    pe_cells = overview.split("% Effectuated", 1)[1].split("Enrolled Population", 1)[0]
+    pe_cells = overview.split("% Effectuated", 1)[1].split("Enrollment status", 1)[0]
     assert "865,946" not in ce_cells and "1,000,000" not in ce_cells
     assert "90.0%" not in pe_cells
     page = executive_part(report)
@@ -76,7 +76,7 @@ def test_population_trend_is_not_daily_enrollment_activity(tmp_path):
 def test_unavailable_counterpart_is_dash_not_zero(tmp_path):
     overview = eh.plan_year_overview(report_for(tmp_path))
     assert f"<td>{ex.DASH}</td>" in overview
-    assert ">0<" not in overview.split("Enrolled Population", 1)[1]
+    assert ">0<" not in overview
 
 
 def test_total_applicants_is_applicant_level_reference(tmp_path):
@@ -108,17 +108,16 @@ def test_kpis_use_live_py2027_values(tmp_path):
     assert "Currently Enrolled" in kpis and "950,000" in kpis
     assert "% Effectuated" in kpis and "62.0%" in kpis
     assert "Applications Started" in kpis and "Submitted Applications" in kpis
-    assert "PY2027 dashboard" in kpis
+    assert "Current" in kpis and "PY2027 dashboard" not in kpis
     assert "LIVE_THIS_RUN" not in kpis and "STALE_FALLBACK" not in kpis
 
 
 def test_status_population_rows_are_exact_database_counts(tmp_path):
-    overview = eh.plan_year_overview(report_for(tmp_path))
-    assert "871,095" in overview and "529,245" in overview
-    assert "596,598" in overview and "11,322" in overview
-    assert eh.POP_CONTEXT in overview
-    enrolled = overview.split("Enrolled Population", 1)[1].split("Cancelled Population", 1)[0]
-    assert ex.DASH in enrolled
+    snapshot = eh.plan_year_snapshot(report_for(tmp_path))
+    assert "871,095" in snapshot and "529,245" in snapshot
+    assert "596,598" in snapshot and "11,322" in snapshot
+    chart = eh.status_composition(report_for(tmp_path))
+    assert "Exact database count" in chart
 
 
 def test_no_auth_or_pii_leakage(tmp_path):

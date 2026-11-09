@@ -200,8 +200,8 @@ def test_comparison_charts_preserve_semantic_status(tmp_path):
 
 def test_layout_order(tmp_path):
     html_text = ex.render_html(report_for(tmp_path))
-    order = ["Plan Year Snapshot", "Plan Year Overview", "PY2026 Enrollment Status Composition",
-             "PY2026 Enrollment Activity by Month", "PY2027 Enrollment Mix", "PY2027 Application Funnel",
+    order = ["Plan Year Operational Snapshot", "Plan Year Overview", "PY2026 Enrollment Status Composition",
+             "PY2027 Enrollment Mix", "PY2027 Application Funnel", "PY2026 Enrollment Activity by Month",
              "PY2027 Enrollment Population Trend", "PY2027 Daily Policy Activity", "Technical details"]
     positions = [html_text.index(f">{title}<") for title in order]
     assert positions == sorted(positions)

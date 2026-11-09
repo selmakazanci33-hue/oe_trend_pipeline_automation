@@ -43,7 +43,8 @@ def test_plan_year_snapshot_shows_both_years_without_a_fake_difference(tmp_path,
     assert ">PY2026<" in snapshot and ">PY2027<" in snapshot
     assert "Latest Database State" in snapshot and "Current OE Dashboard" in snapshot
     assert "871,095" in snapshot and "950,000" in snapshot and "62.0%" in snapshot
-    assert eh.SNAPSHOT_NOTE in snapshot and "Direct YoY calculation not applied" in snapshot
+    assert eh.SNAPSHOT_NOTE in snapshot
+    assert "78,905" not in snapshot and "Definition alignment in progress" not in snapshot
     assert "78,905" not in snapshot and "+78,905" not in snapshot
     assert "pp" not in snapshot
 
@@ -102,8 +103,8 @@ def test_created_confirmed_mix_funnel_trend_and_policy_remain(tmp_path, monkeypa
     assert eh.OBSERVED_CHANGE in trend and "new enrollment" not in trend.lower()
     assert "+150,000" in trend
     policy = eh.daily_chart(report_for(tmp_path))
-    assert eh.DAILY_POLICY_TITLE in policy and "Cancelled Latest Day" in policy
-    assert "Cancelled Period Total" in policy and "8,258" in policy
+    assert eh.DAILY_POLICY_TITLE in policy and eh.DAILY_POLICY_SUBTITLE in policy
+    assert "Latest observed day" in policy and "Observed period total" in policy and "8,258" in policy
     assert "Terminated Latest Day" not in policy and "Terminated Period Total" not in policy
 
 

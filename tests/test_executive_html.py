@@ -12,8 +12,9 @@ RAW_ENUMS = ("STALE_FALLBACK", "LIVE_THIS_RUN", "HISTORICAL_SNAPSHOT", "PY2027_O
              "NO_ACTIVITY_BRIDGE", "OTHER_LIFECYCLE_CLASS", "CE1", "CE2", "CE3", "CE4")
 ENGINEERING_PHRASES = ("duplicate", "dedup", "existing slot", "production_comparable", "semantic bridge",
                        "identifier proxy", "source-series store", "source_series", "validation state", "artifact",
-                       "phase 6", "parser", "fallback", "stale", "comparable mtd series unavailable",
-                       "not selected as official", "not a proven partition")
+                       "phase 6", "phase 8", "parser", "fallback", "stale", "comparable mtd series unavailable",
+                       "not selected as official", "not a proven partition", "jaql", "fingerprint", "widget oid",
+                       "validation_failed", "duplicate_slot", "parse fail")
 ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 
 
@@ -201,7 +202,7 @@ def test_daily_supports_two_series_when_compatible(tmp_path):
 def test_daily_py2027_only_shows_plain_note(tmp_path):
     report = report_for(tmp_path)
     chart = eh.population_trend_chart(report)
-    assert eh.POPULATION_TREND_NOTE in chart and ">PY2026<" not in chart
+    assert eh.POPULATION_TREND_SUBTITLE in chart and ">PY2026<" not in chart
     assert eh.POPULATION_TREND_TITLE in chart
     assert "PY2026 vs PY2027" not in chart
     assert "Nov 01" in chart
@@ -251,7 +252,6 @@ def test_population_snapshots_are_not_called_daily_enrollment(tmp_path):
     assert ">Daily Enrollment<" not in page
     assert "daily enrolled activity" not in page.lower()
     assert "daily enrollment activity" not in page.lower()
-    assert eh.POPULATION_TREND_NOTE in page
 
 
 def test_management_table_uses_business_labels(tmp_path):

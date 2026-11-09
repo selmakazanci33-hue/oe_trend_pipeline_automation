@@ -33,7 +33,8 @@ def test_currently_enrolled_difference_blank_until_definition_selected(tmp_path)
     assert "Definition alignment in progress" in table
     assert "-68,184" not in table and "+68,184" not in table
     overview = eh.plan_year_overview(report)
-    assert eh.ALIGNMENT_TEXT in overview and eh.CE_CONTEXT in overview
+    assert eh.NOT_COMPARABLE_TEXT in overview
+    assert eh.ALIGNMENT_TEXT not in overview
     assert "-68,184" not in overview and "pp" not in overview
 
 
@@ -44,9 +45,9 @@ def test_effectuated_difference_blank_until_alignment_proven(tmp_path):
     view = next(r for r in report["management_view"] if r["metric"] == "% Effectuated")
     assert view["change"] == ex.DASH
     overview = eh.plan_year_overview(report)
-    assert eh.ALIGNMENT_TEXT in overview
-    assert "62.0%" in overview
-    assert "90.0%" not in overview.split("% Effectuated", 1)[1].split("Enrolled Population", 1)[0]
+    assert eh.NOT_COMPARABLE_TEXT in overview and "62.0%" not in overview
+    assert "90.0%" not in overview
+    assert "62.0%" in eh.plan_year_snapshot(report)
 
 
 def test_one_year_chart_never_titled_as_vs(tmp_path):

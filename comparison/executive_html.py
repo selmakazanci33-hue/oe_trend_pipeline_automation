@@ -52,23 +52,25 @@ TECHNICAL_ID = "technical"
 ALIGNMENT_TEXT = "Definition alignment in progress"
 CE_CONTEXT = "PY2026 equivalent definition not yet confirmed"
 POP_CONTEXT = "Distinct people · latest database state"
+NOT_COMPARABLE_TEXT = "Not directly comparable"
+DATABASE_METRIC = "PY2026 database metric"
+DASHBOARD_METRIC = "PY2027 dashboard metric"
 ACTIVITY_TITLE = "PY2026 Enrollment Activity by Month"
-ACTIVITY_NOTE = ("PY2027 equivalent enrollment-created/confirmed series is not available in the observed "
-                 "dashboard metrics.")
+ACTIVITY_NOTE = "PY2026 created and confirmed activity."
 POPULATION_TREND_TITLE = "PY2027 Enrollment Population Trend"
-POPULATION_TREND_SUBTITLE = "Currently Enrolled snapshots by report date"
+POPULATION_TREND_SUBTITLE = "Validated Currently Enrolled snapshots by report date"
 POPULATION_TREND_NOTE = "PY2026 equivalent historical population series is not available."
 DAILY_POLICY_TITLE = "PY2027 Daily Policy Activity"
+DAILY_POLICY_SUBTITLE = "Cancelled policies by enrollment last-update date"
 APPLICANT_REFERENCE = "Applicant-level reference"
 OVERVIEW_TITLE = "Plan Year Overview"
-SNAPSHOT_TITLE = "Plan Year Snapshot"
-SNAPSHOT_NOTE = ("Plan-year definitions differ; values are shown for operational context and are not a direct "
-                 "YoY calculation.")
-SNAPSHOT_CONTEXT = "Operational context. Definitions differ. Direct YoY calculation not applied."
+SNAPSHOT_TITLE = "Plan Year Operational Snapshot"
+SNAPSHOT_NOTE = ("Plan-year metrics reflect their respective operational definitions; direct YoY differences "
+                 "are shown only where definitions align.")
 COMPOSITION_TITLE = "PY2026 Enrollment Status Composition"
 EVOLUTION_TITLE = "PY2026 Enrollment Status Evolution"
-EVOLUTION_SUBTITLE = "Historical latest-state snapshots"
-OBSERVED_CHANGE = "Change in observed population"
+EVOLUTION_SUBTITLE = "Historical latest-state enrollment population"
+OBSERVED_CHANGE = "Change in Observed Population"
 STATUS_COLORS = {"Enrolled": "#0d9488", "Cancelled": "#d97706", "Terminated": "#dc2626", "Pending": "#64748b"}
 
 
@@ -157,7 +159,7 @@ def kpis(report: dict) -> str:
     now = report["executive_summary"]["data_refreshed"]
     cards = []
     for k in report["kpis"]:
-        secondary = freshness_note(k, now) if k["freshness"] != ex.LIVE else "<span class='m'>PY2027 dashboard</span>"
+        secondary = freshness_note(k, now) if k["freshness"] != ex.LIVE else "<span class='fresh'>Current</span>"
         value = ex.DASH if k["value"] is None else ex.fmt(k["value"], k["value_kind"])
         cards.append(f"<div class='kpi'><div class='k'>{_e(k['label'])}</div>"
                      f"<div class='v'>{_e(value)}</div>{secondary}</div>")
@@ -174,9 +176,10 @@ def _stat_rows(rows: list[tuple[str, str]]) -> str:
     return "".join(f"<div class='stat'><span>{_e(label)}</span><b>{_e(value)}</b></div>" for label, value in rows)
 
 
-def _panel(heading: str, subtitle: str, rows: list[tuple[str, str]], footnote: str) -> str:
+def _panel(heading: str, subtitle: str, rows: list[tuple[str, str]], footnote: str = "") -> str:
+    foot = f"<p class='muted'>{_e(footnote)}</p>" if footnote else ""
     return (f"<div class='year'><h4>{_e(heading)}</h4><div class='sub'>{_e(subtitle)}</div>"
-            f"{_stat_rows(rows)}<p class='muted'>{_e(footnote)}</p></div>")
+            f"{_stat_rows(rows)}{foot}</div>")
 
 
 def plan_year_snapshot(report: dict) -> str:
@@ -194,16 +197,16 @@ def plan_year_snapshot(report: dict) -> str:
         return ex.fmt(item["value"], kind)
 
     left = _panel("PY2026", "Latest Database State",
-                  [(status, db_count(status)) for status in ex.STATUS_ORDER], POP_CONTEXT)
+                  [(status, db_count(status)) for status in ex.STATUS_ORDER])
     right = _panel("PY2027", "Current OE Dashboard", [
         ("Currently Enrolled", dashboard_value("Currently Enrolled")),
         ("% Effectuated", dashboard_value("% Effectuated", "ratio")),
         ("New", dashboard_value("New")),
         ("Active", dashboard_value("Active")),
         ("Passive", dashboard_value("Passive")),
-    ], "Dashboard value")
-    note = f"<p class='muted'>{_e(SNAPSHOT_NOTE)}</p><p class='muted'>{_e(SNAPSHOT_CONTEXT)}</p>"
-    return _card(SNAPSHOT_TITLE, f"<div class='split'>{left}{right}</div>{note}", extra_class="major")
+    ])
+    return _card(SNAPSHOT_TITLE, f"<div class='split'>{left}{right}</div><p class='muted'>{_e(SNAPSHOT_NOTE)}</p>",
+                 extra_class="major")
 
 
 def status_composition(report: dict) -> str:
@@ -212,8 +215,8 @@ def status_composition(report: dict) -> str:
     if not main:
         return _note_card(COMPOSITION_TITLE, "PY2026 status counts are not available for this report.")
     body = ex.hbar_svg([(b["status"], b["distinct_people"], STATUS_COLORS[b["status"]]) for b in main])
-    body += "<p class='muted'>Exact database count. Distinct people · latest database state.</p>"
-    return _card(COMPOSITION_TITLE, body, subtitle="Latest database state")
+    return _card(COMPOSITION_TITLE, body + "<p class='muted'>Exact database count.</p>",
+                 subtitle="Latest database state")
 
 
 def status_evolution_chart(report: dict) -> str:
@@ -229,12 +232,9 @@ def status_evolution_chart(report: dict) -> str:
             series.append((label, STATUS_COLORS[label], values))
     if not series:
         return ""
-    note = "Each point is the latest-state population captured by that historical snapshot."
-    if data.get("omitted_dates"):
-        note += " An all-zero snapshot was left blank."
+    note = "<p class='muted'>An all-zero snapshot was left blank.</p>" if data.get("omitted_dates") else ""
     svg = ex.line_svg(cats, series, {day: ex.day_label(day) for day in cats})
-    return _card(EVOLUTION_TITLE, svg + f"<p class='muted'>{_e(note)}</p>", subtitle=EVOLUTION_SUBTITLE,
-                 extra_class="major")
+    return _card(EVOLUTION_TITLE, svg + note, subtitle=EVOLUTION_SUBTITLE, extra_class="major")
 
 
 # --- selector charts ---------------------------------------------------------------------------
@@ -308,29 +308,21 @@ def _line_panel(item: dict) -> str:
 
 
 def plan_year_overview(report: dict) -> str:
-    now = report["executive_summary"]["data_refreshed"]
-    snapshot = {r["metric_id"]: r for r in report["py2027_current_snapshot"]}
-    ce, pe = snapshot.get(ex.CE), snapshot.get(ex.PE)
-    bars = {b["status"]: b.get("distinct_people") for b in report["py2026_status_population_chart"]["bars"]}
-    rows = [
-        ("Currently Enrolled", ALIGNMENT_TEXT,
-         ex.DASH if not ce or ce.get("value") is None else ex.fmt(ce["value"]), CE_CONTEXT),
-        ("% Effectuated", ALIGNMENT_TEXT,
-         ex.DASH if not pe or pe.get("value") is None else ex.fmt(pe["value"], "ratio"), CE_CONTEXT),
-    ]
-    for status in ex.STATUS_ORDER:
-        people = bars.get(status)
-        rows.append((f"{status} Population", ex.DASH if people is None else ex.fmt(people), ex.DASH, POP_CONTEXT))
-    body = "<table class='grid'><tr><th>Metric</th><th>PY2026</th><th>PY2027</th><th>Context</th></tr>"
-    for metric, py26, py27, context in rows:
-        note = ""
-        item = ce if metric == "Currently Enrolled" else pe if metric == "% Effectuated" else None
-        if (item is not None and item.get("value") is not None
-                and item.get("freshness") not in (ex.LIVE, None)):
-            note = f"<div class='m'>{freshness_note(item, now)}</div>"
-        body += (f"<tr><td>{_e(metric)}</td><td>{_e(py26)}</td><td>{_e(py27)}{note}</td>"
-                 f"<td class='muted'>{_e(context)}</td></tr>")
-    return _card(OVERVIEW_TITLE, body + "</table>")
+    """Comparability legend only. Counts stay in the snapshot and charts."""
+    rows = (
+        ("Currently Enrolled", ex.DASH, DASHBOARD_METRIC),
+        ("% Effectuated", ex.DASH, DASHBOARD_METRIC),
+        ("Enrollment status", DATABASE_METRIC, ex.DASH),
+        ("Created and Confirmed", DATABASE_METRIC, ex.DASH),
+        ("Enrollment mix", ex.DASH, DASHBOARD_METRIC),
+        ("Applications", ex.DASH, DASHBOARD_METRIC),
+        ("Daily policy activity", ex.DASH, DASHBOARD_METRIC),
+    )
+    body = "<table class='grid'><tr><th>Metric</th><th>PY2026</th><th>PY2027</th><th>Comparison</th></tr>"
+    for metric, py26, py27 in rows:
+        body += (f"<tr><td>{_e(metric)}</td><td>{_e(py26)}</td><td>{_e(py27)}</td>"
+                 f"<td class='muted'>{_e(NOT_COMPARABLE_TEXT)}</td></tr>")
+    return _card(OVERVIEW_TITLE, body + "</table>", subtitle="Where each metric is shown")
 
 
 def py2026_activity_chart(report: dict) -> str:
@@ -395,12 +387,7 @@ def population_trend_chart(report: dict) -> str:
     if not item or not item.get("selector_enabled"):
         return _note_card(POPULATION_TREND_TITLE, "No validated Currently Enrolled snapshots yet.")
     title = "Enrollment Population Trend" if item["mode"] == ex.MODE_YOY else POPULATION_TREND_TITLE
-    notes = []
-    if item["mode"] != ex.MODE_YOY:
-        notes.append(POPULATION_TREND_NOTE)
-    if not item["calendar"]:
-        notes.append("Shown in observed order; calendar dates were not available.")
-    note = f"<p class='muted'>{_e(' '.join(notes))}</p>" if notes else ""
+    note = "" if item["calendar"] else "<p class='muted'>Shown in observed order; calendar dates were not available.</p>"
     return _card(title, _population_strip(item) + _line_panel(item) + note, subtitle=POPULATION_TREND_SUBTITLE,
                  extra_class="major")
 
@@ -415,7 +402,7 @@ def _population_strip(item: dict) -> str:
     cards = [("Latest Currently Enrolled", ex.fmt(latest_value), label(latest_day)),
              ("First Observed", ex.fmt(first_value), label(first_day))]
     if len(pairs) >= 2:
-        cards.append((OBSERVED_CHANGE, f"{latest_value - first_value:+,}", "Validated snapshots"))
+        cards.append((OBSERVED_CHANGE, f"{latest_value - first_value:+,}", "First snapshot to latest snapshot"))
     return _strip(cards)
 
 
@@ -438,10 +425,13 @@ def daily_chart(report: dict) -> str:
         svg = ex.line_svg(cats, series, labels)
     missing = [item["label"] for key, item in daily["metrics"].items()
                if key in ("cancelled", "terminated") and not item.get("selector_enabled")]
-    note = "Policy status updates by day. Separate from enrollment population."
+    names = [item["label"] for _, item in present]
+    subtitle = DAILY_POLICY_SUBTITLE if names == ["Cancelled"] else "Policies by enrollment last-update date"
+    note = "Separate from enrollment population."
     if missing:
-        note += " " + ", ".join(missing) + ": not available this run."
-    return _card(DAILY_POLICY_TITLE, summary + svg + f"<p class='muted'>{_e(note)}</p>", extra_class="major")
+        note += " " + " and ".join(missing) + " is not available this run."
+    return _card(DAILY_POLICY_TITLE, summary + svg + f"<p class='muted'>{_e(note)}</p>", subtitle=subtitle,
+                 extra_class="major")
 
 
 def _policy_strip(present: list) -> str:
@@ -455,10 +445,11 @@ def _policy_strip(present: list) -> str:
         latest_day, latest_value = pairs[-1]
         peak_day, peak_value = max(pairs, key=lambda pair: (pair[1], pair[0]))
         name = item["label"]
+        prefix = f"{name} " if len(present) > 1 else ""
         cards.extend((
-            (f"{name} Latest Day", ex.fmt(latest_value), label(latest_day)),
-            (f"{name} Period Total", ex.fmt(sum(value for _, value in pairs)), f"{len(pairs)} days"),
-            (f"{name} Peak Day", ex.fmt(peak_value), label(peak_day)),
+            (f"{prefix}Latest observed day", ex.fmt(latest_value), label(latest_day)),
+            (f"{prefix}Observed period total", ex.fmt(sum(value for _, value in pairs)), f"{len(pairs)} days"),
+            (f"{prefix}Peak day", ex.fmt(peak_value), label(peak_day)),
         ))
     return _strip(cards) if cards else ""
 
@@ -701,11 +692,11 @@ def technical_details(report: dict) -> str:
 
 CSS = (
     "body{margin:0;background:#f8fafc;color:#1e293b;font-family:'Segoe UI',Roboto,Arial,sans-serif;font-size:14px}"
-    "header{background:#fff;border-bottom:1px solid #e2e8f0;padding:20px 32px}"
+    "header{background:#fff;border-bottom:1px solid #e2e8f0;padding:16px 32px}"
     "header .org{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#64748b}"
     "header h1{margin:4px 0 6px;font-size:24px}.asof{font-size:14px;color:#334155}"
     ".sources{display:flex;gap:18px;margin-top:8px;font-size:12px;color:#475569}"
-    "main{padding:20px 32px;max-width:1280px;margin:0 auto}"
+    "main{padding:16px 32px 28px;max-width:1280px;margin:0 auto}"
     ".split{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:800px){.split{grid-template-columns:1fr}}"
     ".year{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px}"
     ".year h4{margin:0 0 2px;font-size:15px}"
@@ -714,18 +705,18 @@ CSS = (
     ".strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:4px 0 10px}"
     ".mini{background:#f8fafc;border-radius:8px;padding:8px 10px}.mini .v{font-size:16px;font-weight:700;margin:2px 0}"
     ".insight{margin:8px 0;font-size:13px;color:#334155}"
-    ".kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:18px}"
+    ".kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:0 0 12px}"
     ".kpi{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px}"
     ".k{font-size:12px;color:#64748b;text-transform:uppercase}.kpi .v{font-size:28px;font-weight:700;margin:4px 0}"
     ".v2{font-size:22px;font-weight:700;margin:2px 0}.m{font-size:11px;color:#64748b}"
-    ".card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px 20px;margin-bottom:16px}"
+    ".card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:12px}"
     ".card h3{margin:0 0 4px;font-size:16px}.card.major h3{font-size:18px}.card.empty{background:#f8fafc}"
     ".panel h4{margin:0 0 4px;font-size:15px}"
     ".sub{font-size:12px;color:#475569;margin-bottom:8px}.muted{color:#64748b;font-size:12px}"
     ".pill{display:inline-block;padding:1px 9px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:11px;"
     "font-weight:600}.fresh{color:#166534}.fresh.na{color:#64748b}.fresh.old{color:#b45309;font-weight:600}"
     ".pair{display:flex;flex-wrap:wrap;gap:28px;margin:6px 0 10px}.ref{border-left:3px solid #e2e8f0;padding-left:12px}"
-    "h2{font-size:20px;margin:26px 0 10px}h2.major{border-left:4px solid #2563eb;padding-left:10px}"
+    "h2.group{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#64748b;margin:20px 0 8px;font-weight:700}"
     ".selector{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}"
     ".selector button{border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:4px 12px;cursor:pointer;"
     "font-size:13px}.selector button.on{background:#2563eb;color:#fff;border-color:#2563eb}"
@@ -750,16 +741,25 @@ SELECTOR_JS = (
 )
 
 
+def _group(title: str) -> str:
+    return f"<h2 class='group'>{_e(title)}</h2>"
+
+
 def executive_body(report: dict) -> str:
     return "".join((
+        _group("Executive Snapshot"),
         kpis(report),
         plan_year_snapshot(report),
+        _group("Plan-Year Operational View"),
         plan_year_overview(report),
+        _group("PY2026 Historical View"),
         status_composition(report),
         status_evolution_chart(report),
-        py2026_activity_chart(report),
+        _group("PY2027 Current OE View"),
         nap_chart(report),
         funnel_chart(report),
+        _group("Trends & Activity"),
+        py2026_activity_chart(report),
         population_trend_chart(report),
         daily_chart(report),
     ))
