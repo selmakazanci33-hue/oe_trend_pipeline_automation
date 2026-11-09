@@ -23,7 +23,7 @@ from typing import Any, Iterable, Mapping
 
 from playwright.sync_api import BrowserContext, Request
 
-from config.settings import VERIFIED_JAQL_URL
+from config.settings import VERIFIED_DATASOURCE, VERIFIED_JAQL_URL
 from sisense.passive import (
     ExpectedWidgetQuery,
     _request_payload,
@@ -39,6 +39,23 @@ MAX_WIDGETS = 80
 # Inventory fingerprints and response shapes need the already-received Request.
 # Bound to the same cap as widget tracking so a full dashboard load can be inventoried.
 MAX_RETAINED = MAX_WIDGETS
+MAX_OUT_OF_SCOPE_SAMPLES = 20
+MAX_NEAR_MISS_PATHS = 10
+
+OUT_OF_SCOPE_UNPARSEABLE = "unparseable_body"
+OUT_OF_SCOPE_NO_REFERENCE = "no_dashboard_or_widget_reference"
+OUT_OF_SCOPE_DASHBOARD = "other_dashboard"
+OUT_OF_SCOPE_DATASOURCE = "other_datasource"
+
+
+def _endpoint(url: Any) -> tuple[str, str, str]:
+    """Scheme, host and path. Query strings and fragments do not change the JAQL endpoint."""
+    base = (url if isinstance(url, str) else "").split("#", 1)[0].split("?", 1)[0]
+    scheme, separator, rest = base.partition("://")
+    if not separator:
+        return "", "", base
+    host, slash, path = rest.partition("/")
+    return scheme.lower(), host.lower(), slash + path
 
 SHAPE_SINGLE = "SINGLE_INDICATOR"
 SHAPE_MULTI_MEASURE = "MULTI_MEASURE"
@@ -394,30 +411,36 @@ class DiscoveryObserver:
         url: str = VERIFIED_JAQL_URL,
         max_widgets: int = MAX_WIDGETS,
         max_retained: int = MAX_RETAINED,
+        datasource_title: str | None = VERIFIED_DATASOURCE["title"],
     ):
         self._dashboard_id = dashboard_id
         self._datasource_id = datasource_id
+        self._datasource_title = normalize_label(datasource_title)
         self.target_labels = tuple(target_labels)
         self._verified_widget_id = verified_widget_id
         self._url = url
+        self._endpoint = _endpoint(url)
         self._max_widgets = max_widgets
         self._max_retained = max_retained
         self._context: BrowserContext | None = None
         self._widgets: dict[str, _WidgetEntry] = {}
+        self._closed = False
+        self._reset_counters()
+
+    def _reset_counters(self) -> None:
         self.target_requests_seen = 0
         self.out_of_scope = 0
         self.widgets_dropped = 0
-        self._closed = False
+        self.out_of_scope_reasons: dict[str, int] = {}
+        self.out_of_scope_samples: list[dict[str, str | None]] = []
+        self.endpoint_near_misses: dict[str, int] = {}
         self._sequence = 0
 
     def attach(self, context: BrowserContext) -> None:
         self._context = context
         self._closed = False
         self._widgets = {}
-        self.target_requests_seen = 0
-        self.out_of_scope = 0
-        self.widgets_dropped = 0
-        self._sequence = 0
+        self._reset_counters()
 
         def on_request_finished(request: Request) -> None:
             if context is self._context:
@@ -431,7 +454,7 @@ class DiscoveryObserver:
         self._context = None
 
     def is_target(self, request: Request) -> bool:
-        return request.method == "POST" and request.url == self._url
+        return request.method == "POST" and _endpoint(request.url) == self._endpoint
 
     @property
     def retained_count(self) -> int:
@@ -452,19 +475,69 @@ class DiscoveryObserver:
         """
         return structure is not None
 
+    def _datasource_in_scope(self, structure: WidgetStructure) -> bool:
+        """The verified id, or the verified title when a widget carries another id form for it.
+
+        The endpoint path already names the verified datasource.
+        """
+        if structure.datasource_id == self._datasource_id:
+            return True
+        return self._datasource_title is not None and normalize_label(structure.datasource_title) == self._datasource_title
+
+    def _out_of_scope_reason(self, payload: Mapping[str, Any] | None, structure: WidgetStructure | None) -> str | None:
+        if payload is None:
+            return OUT_OF_SCOPE_UNPARSEABLE
+        if structure is None:
+            return OUT_OF_SCOPE_NO_REFERENCE
+        if structure.dashboard_id != self._dashboard_id:
+            return OUT_OF_SCOPE_DASHBOARD
+        if not self._datasource_in_scope(structure):
+            return OUT_OF_SCOPE_DATASOURCE
+        return None
+
+    def _note_out_of_scope(self, reason: str, structure: WidgetStructure | None) -> None:
+        """Reason counts plus identity references only. No metadata, filters or values."""
+        self.out_of_scope += 1
+        self.out_of_scope_reasons[reason] = self.out_of_scope_reasons.get(reason, 0) + 1
+        if len(self.out_of_scope_samples) >= MAX_OUT_OF_SCOPE_SAMPLES:
+            return
+        sample: dict[str, str | None] = {"reason": reason}
+        if structure is not None:
+            sample.update(
+                dashboard_id=structure.dashboard_id,
+                widget_id=structure.widget_id,
+                widget_title=structure.widget_title,
+                widget_type=structure.widget_type,
+                datasource_id=structure.datasource_id,
+                datasource_title=structure.datasource_title,
+            )
+        if sample not in self.out_of_scope_samples:
+            self.out_of_scope_samples.append(sample)
+
+    def _note_near_miss(self, request: Request) -> None:
+        """POSTs to another JAQL path on the same host. Path only; no query string."""
+        if request.method != "POST":
+            return
+        scheme, host, path = _endpoint(request.url)
+        if (scheme, host) != self._endpoint[:2] or not path.rstrip("/").lower().endswith("/jaql"):
+            return
+        if path in self.endpoint_near_misses or len(self.endpoint_near_misses) < MAX_NEAR_MISS_PATHS:
+            self.endpoint_near_misses[path] = self.endpoint_near_misses.get(path, 0) + 1
+
     def _on_request_finished(self, request: Request) -> None:
         if self._closed:
             return
         if not self.is_target(request):
+            self._note_near_miss(request)
             return
         if self._is_retained(request):
             return
         self.target_requests_seen += 1
         payload = _request_payload(request)
         structure = widget_structure(payload)
-        if (structure is None or structure.dashboard_id != self._dashboard_id
-                or structure.datasource_id != self._datasource_id):
-            self.out_of_scope += 1
+        reason = self._out_of_scope_reason(payload, structure)
+        if reason is not None:
+            self._note_out_of_scope(reason, structure)
             return
         entry = self._widgets.get(structure.widget_id)
         if entry is None:
@@ -701,6 +774,9 @@ class DiscoveryResult:
     out_of_scope: int
     widgets_dropped: int
     retention_skipped: int = 0
+    out_of_scope_reasons: tuple[tuple[str, int], ...] = ()
+    out_of_scope_samples: tuple[dict[str, str | None], ...] = ()
+    endpoint_near_misses: tuple[tuple[str, int], ...] = ()
 
     @property
     def widget_count(self) -> int:
@@ -775,10 +851,19 @@ def evaluate_discovery(observer: DiscoveryObserver, expected: ExpectedWidgetQuer
                 definition.structure, definition.observations, multiple, matches, response, control,
                 definition.fingerprint,
             ))
+    if observer.out_of_scope or observer.endpoint_near_misses:
+        logger.info(
+            "Discovery scope: %d out-of-scope JAQL POST(s) %s; other JAQL paths %s",
+            observer.out_of_scope, dict(sorted(observer.out_of_scope_reasons.items())),
+            dict(sorted(observer.endpoint_near_misses.items())),
+        )
     return DiscoveryResult(
         widgets=tuple(widgets),
         target_requests_seen=observer.target_requests_seen,
         out_of_scope=observer.out_of_scope,
         widgets_dropped=observer.widgets_dropped,
         retention_skipped=sum(entry.retention_skipped for entry in observer.entries()),
+        out_of_scope_reasons=tuple(sorted(observer.out_of_scope_reasons.items())),
+        out_of_scope_samples=tuple(dict(sample) for sample in observer.out_of_scope_samples),
+        endpoint_near_misses=tuple(sorted(observer.endpoint_near_misses.items())),
     )

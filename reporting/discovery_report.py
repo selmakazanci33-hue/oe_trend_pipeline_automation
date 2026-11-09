@@ -108,6 +108,9 @@ def discovery_document(
             "widgets": len(result.widgets),
             "widgets_dropped": result.widgets_dropped,
             "retention_skipped": result.retention_skipped,
+            "out_of_scope_reasons": dict(result.out_of_scope_reasons),
+            "out_of_scope_samples": [dict(sample) for sample in result.out_of_scope_samples],
+            "other_jaql_paths": dict(result.endpoint_near_misses),
         },
         "metrics": [
             {
