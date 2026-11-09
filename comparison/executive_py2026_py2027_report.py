@@ -725,6 +725,149 @@ def daily_axis(points: list[dict]) -> tuple[list[str], bool]:
     return [f"Day {index}" for index in range(1, len(points) + 1)], False
 
 
+# --- plan-year monthly / daily comparison models ----------------------------------------------
+
+MODE_YOY = "YOY"
+MODE_PY2026 = "PY2026_ONLY"
+MODE_PY2027 = "PY2027_ONLY"
+MODE_DISABLED = "DISABLED"
+SELECTOR_DISABLED_TIP = "Comparable PY2027 definition not available yet"
+SAME_PERIOD_PENDING = "Same-period comparison not yet available"
+DAILY_PY2026_PENDING = "PY2026 equivalent daily series is not available yet."
+PLAN_MONTH_LABELS = ("Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep")
+
+
+def plan_year_months(plan_year: int) -> list[str]:
+    """Oct of the prior calendar year through Sep of the plan year (OE/plan-year ordering)."""
+    months = []
+    year, month = plan_year - 1, 10
+    for _ in range(12):
+        months.append(f"{year:04d}-{month:02d}")
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
+def _last_per_period(points: list[dict], width: int) -> dict:
+    """Last validated value per period key (date[:width]); points ordered by retrieval time."""
+    out: dict[str, dict] = {}
+    for point in points:
+        day = valid_date_label(str(point.get("retrieved_at") or "")[:10])
+        if day is not None and point.get("value") is not None:
+            out[day[:width]] = {"value": point["value"], "day": day}
+    return out
+
+
+def _py2027_ce_points(model: dict) -> list[dict]:
+    points = [{"value": p["value"], "retrieved_at": p["retrieved_at_utc"]}
+              for p in model["history"].get("snapshots", {}).get(CE) or []]
+    live = model["py2027"]["metrics"][CE]
+    if live["freshness"] == LIVE:
+        points.append({"value": live["value"], "retrieved_at": live["retrieved_at"]})
+    return sorted(points, key=lambda p: str(p["retrieved_at"]))
+
+
+def _py2026_population_points(model: dict) -> list[dict]:
+    report = model["py2026"]["report"] or {}
+    return [{"value": p.get("distinct_people"), "retrieved_at": p.get("date")}
+            for p in report.get("historical_population_series") or [] if valid_date_label(p.get("date"))]
+
+
+def _mode(py26: list, py27: list) -> str:
+    has26, has27 = any(v is not None for v in py26), any(v is not None for v in py27)
+    if has26 and has27:
+        return MODE_YOY
+    return MODE_PY2026 if has26 else MODE_PY2027 if has27 else MODE_DISABLED
+
+
+def monthly_yoy(model: dict, temporal: dict) -> dict:
+    """Plan-year monthly model. Future PY2027 months stay None; a partial month is MONTH_TO_DATE."""
+    as_of = valid_date_label(str(model["generated_at_utc"])[:10]) or "0000-00-00"
+    as_of_month = as_of[:7]
+    axis26, axis27 = plan_year_months(2026), plan_year_months(2027)
+    fields = temporal.get("fields") or {}
+
+    def py26_monthly(name, measure="distinct_people"):
+        rows = (fields.get(name) or {}).get("monthly") or []
+        return {r["month"]: r.get(measure) for r in rows if r.get("month")}
+
+    compatible_activity = bool(COMPATIBLE_PY2027_ACTIVITY_METRICS & set(model["py2027"].get("activity_series") or {}))
+    py27_activity = model["py2027"].get("activity_monthly") or {} if compatible_activity else {}
+    enrolled27 = _last_per_period(_py2027_ce_points(model), 7)
+    enrolled26 = _last_per_period(_py2026_population_points(model), 7)
+    specs = (
+        ("enrolled", "Enrolled", {m: v["value"] for m, v in enrolled26.items()},
+         {m: v["value"] for m, v in enrolled27.items()}, DIAGNOSTIC,
+         "Month-end (or latest) validated Currently Enrolled; PY2026 needs a historical population series."),
+        ("created", "Created", py26_monthly("enrollment_create_date"),
+         {m: v.get("value") for m, v in (py27_activity.get("created") or {}).items()}, DIAGNOSTIC,
+         "Distinct people by enrollment create month."),
+        ("confirmed", "Confirmed", py26_monthly("enrollment_confirmation_date"),
+         {m: v.get("value") for m, v in (py27_activity.get("confirmed") or {}).items()}, DIAGNOSTIC,
+         "Distinct people by enrollment confirmation month."),
+        ("cancelled", "Cancelled", {}, {}, NOT_COMPARABLE,
+         "PY2026 latest-state population and PY2027 daily activity are different definitions."),
+        ("terminated", "Terminated", {}, {}, NOT_COMPARABLE,
+         "PY2026 latest-state population and PY2027 daily activity are different definitions."),
+    )
+    metrics = {}
+    for key, label, data26, data27, family_status, definition in specs:
+        py26 = [data26.get(m) for m in axis26]
+        py27 = [data27.get(m) if m <= as_of_month else None for m in axis27]
+        periods = [None if v is None else (MONTH_TO_DATE if m == as_of_month else FULL_MONTH)
+                   for m, v in zip(axis27, py27)]
+        mode = _mode(py26, py27)
+        rows = []
+        for i in range(12):
+            both_full = py26[i] is not None and py27[i] is not None and periods[i] == FULL_MONTH
+            rows.append({"month": PLAN_MONTH_LABELS[i], "py2026_month": axis26[i], "py2027_month": axis27[i],
+                         "py2026_value": py26[i], "py2027_value": py27[i], "py2027_period": periods[i],
+                         **difference(py26[i], py27[i], family_status if both_full and mode == MODE_YOY else UNAVAILABLE)})
+        metrics[key] = {
+            "label": label, "mode": mode, "comparison_status": family_status if mode == MODE_YOY else mode,
+            "selector_enabled": mode != MODE_DISABLED, "yoy_enabled": mode == MODE_YOY,
+            "tooltip": None if mode == MODE_YOY else SELECTOR_DISABLED_TIP,
+            "py2026": py26, "py2027": py27, "py2027_period": periods, "rows": rows, "definition": definition,
+            "outside_window_py2026": {m: v for m, v in data26.items() if m not in axis26},
+        }
+    current_index = axis27.index(as_of_month) if as_of_month in axis27 else None
+    current = None
+    if current_index is not None:
+        current = {"month": PLAN_MONTH_LABELS[current_index], "py2027_month": as_of_month,
+                   "py2026_month": axis26[current_index], "through": as_of,
+                   "py2026_full_month": {k: m["py2026"][current_index] for k, m in metrics.items()},
+                   "same_period": None, "message": SAME_PERIOD_PENDING}
+    default = next((k for k, m in metrics.items() if m["mode"] == MODE_YOY), None) or \
+        next((k for k in ("created", "enrolled", "confirmed") if metrics[k]["selector_enabled"]), None)
+    return {"months": list(PLAN_MONTH_LABELS), "py2026_months": axis26, "py2027_months": axis27,
+            "as_of": as_of, "metrics": metrics, "current_month": current, "default": default}
+
+
+def daily_yoy(model: dict, cancellation: dict) -> dict:
+    """Daily PY2026 vs PY2027. PY2026 is paired only through an equivalent daily series (date shifted one year)."""
+    enrolled27 = _last_per_period(_py2027_ce_points(model), 10)
+    enrolled26 = _last_per_period(_py2026_population_points(model), 10)
+    metrics = {}
+    days = sorted(enrolled27)
+    metrics["enrolled"] = {"label": "Enrolled", "calendar": True, "categories": days,
+                           "py2027": [enrolled27[d]["value"] for d in days],
+                           "py2026": [(enrolled26.get(shift_plan_year(d)) or {}).get("value") for d in days],
+                           "family_status": DIAGNOSTIC}
+    for key, mid in (("cancelled", CANCELLED_DAILY), ("terminated", TERMINATED_DAILY)):
+        points = cancellation["py2027_daily_activity"][mid].get("points") or []
+        labels, calendar = daily_axis(points)
+        metrics[key] = {"label": key.capitalize(), "calendar": calendar, "categories": labels,
+                        "py2027": [p["value"] for p in points], "py2026": [None] * len(points),
+                        "family_status": NOT_COMPARABLE}
+    for key, item in metrics.items():
+        mode = _mode(item["py2026"], item["py2027"])
+        item.update({"mode": mode, "selector_enabled": mode != MODE_DISABLED, "yoy_enabled": mode == MODE_YOY,
+                     "comparison_status": item["family_status"] if mode == MODE_YOY else mode,
+                     "tooltip": None if mode == MODE_YOY else SELECTOR_DISABLED_TIP,
+                     "note": None if mode in (MODE_YOY, MODE_DISABLED) else DAILY_PY2026_PENDING})
+    default = next((k for k, m in metrics.items() if m["selector_enabled"]), None)
+    return {"metrics": metrics, "default": default}
+
+
 def build_report(model: dict) -> dict:
     population = population_comparison(model)
     range_ = ce_range(model)
@@ -735,7 +878,12 @@ def build_report(model: dict) -> dict:
     closest = closest_scenario(population)
     report = {
         "report_kind": "EXECUTIVE_PY2026_PY2027_COMPARISON",
-        "phase": "7C",
+        "phase": "7D",
+        "history_summary": {
+            metric_id: {"validated_points": len(points), "first_retrieved_at": points[0]["retrieved_at_utc"],
+                        "last_retrieved_at": points[-1]["retrieved_at_utc"],
+                        "note": "One point per metric and snapshot slot; repeated slots are not stored twice."}
+            for metric_id, points in (model["history"].get("snapshots") or {}).items() if points},
         "generated_at_utc": model["generated_at_utc"],
         "executive_summary": {
             "data_refreshed": model["generated_at_utc"],
@@ -757,6 +905,8 @@ def build_report(model: dict) -> dict:
                 model["py2027"].get("activity_monthly") or {},
                 bool(COMPATIBLE_PY2027_ACTIVITY_METRICS & set(model["py2027"].get("activity_series") or {}))),
         },
+        "monthly_yoy": monthly_yoy(model, temporal),
+        "daily_yoy": daily_yoy(model, cancellation),
         "same_date_table": same_date_table(model, population, range_, closest),
         "py2026_status_population_chart": status_population_chart_data(model),
         "py2027_status_population": {"available": False, "message": PY2027_STATUS_POP_UNAVAILABLE},
@@ -1227,6 +1377,13 @@ def _kpis(report: dict) -> str:
 
 
 def render_html(report: dict) -> str:
+    """Executive (business-language) HTML."""
+    from comparison.executive_html import render_executive_html
+    return render_executive_html(report)
+
+
+def render_engineering_html(report: dict) -> str:
+    """Phase 7C engineering layout; its content is reused inside the executive Technical details."""
     summary = report["executive_summary"]
     population = report["population_comparison"]
     nap = report["new_active_passive"]

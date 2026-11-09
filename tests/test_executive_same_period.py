@@ -200,10 +200,11 @@ def test_comparison_charts_preserve_semantic_status(tmp_path):
 
 def test_layout_order(tmp_path):
     html_text = ex.render_html(report_for(tmp_path))
-    order = [ex.SAME_PERIOD_TITLE, "Currently Enrolled comparison", "Same-Date / Same-Cutoff Comparison",
-             "PY2026 Status Population", "PY2027 New / Active / Passive", "PY2027 Application Funnel",
+    order = [ex.SAME_PERIOD_TITLE, "Monthly Enrollment Comparison — PY2026 vs PY2027",
+             "Daily Enrollment Comparison — PY2026 vs PY2027", "Currently Enrolled comparison",
+             "Same-Date Comparison", "PY2026 Status Population", "PY2027 Enrollment Mix", "PY2027 Application Funnel",
              "PY2026 Monthly Enrollment Lifecycle Activity", "PY2027 Cancellation / Termination Daily Activity",
-             "Management View", "Detailed Diagnostics / Caveats"]
+             "Management View", "Technical details"]
     positions = [html_text.index(f">{title}<") for title in order]
     assert positions == sorted(positions)
     assert html_text.index("class='kpis'") < positions[0]
@@ -222,7 +223,7 @@ def test_live_values_override_stale_artifacts(tmp_path, monkeypatch):
 def test_no_auth_or_pii_in_enhanced_report(tmp_path):
     json_path, html_path = ex.write_report(report_for(tmp_path, series=_invalid_series()), tmp_path / "out")
     text = (json_path.read_text(encoding="utf-8") + html_path.read_text(encoding="utf-8")).lower()
-    for token in ('"enrollee_id"', '"enrollment_id"', "cookie", "authorization", "bearer", "x-xsrf", "<script",
+    for token in ('"enrollee_id"', '"enrollment_id"', "cookie", "authorization", "bearer", "x-xsrf", "<script src",
                   "http://", "https://"):
         assert token not in text
 

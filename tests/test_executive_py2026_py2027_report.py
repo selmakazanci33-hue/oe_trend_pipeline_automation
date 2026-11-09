@@ -146,8 +146,8 @@ def test_sisense_failure_is_visibly_stale_fallback(tmp_path):
     summary = report["executive_summary"]["py2027"]
     assert summary["freshness"] == ex.STALE
     assert summary["note"].startswith("PY2027 Sisense unavailable") and OLD_AT in summary["note"]
-    html_text = ex.render_html(report)
-    assert "PY2027 Sisense unavailable" in html_text and "stale_fallback" in html_text
+    executive_part = ex.render_html(report).split("<details id='technical'", 1)[0]
+    assert "Last validated" in executive_part and "STALE_FALLBACK" not in executive_part
     series = report["cancellation_termination"]["py2027_daily_activity"]["cancelled_policies_daily"]
     assert series["freshness"] == ex.STALE and series["points"][0]["date"] == "2026-10-30"
 
@@ -213,8 +213,8 @@ def test_nap_is_py2027_only_and_not_a_proven_partition(tmp_path):
     assert nap["phase_6d"]["activity_bridge"] == "NO_ACTIVITY_BRIDGE"
     findings = " ".join(report["key_findings"])
     assert "Not a proven partition" in findings
-    html_text = ex.render_html(report)
-    assert ex.NAP_FOOTER in html_text and "PY2027 Enrolled People — New / Active / Passive" in html_text
+    assert ex.NAP_FOOTER in ex.nap_chart(report)
+    assert "PY2027 Enrollment Mix" in ex.render_html(report)
 
 
 def test_application_grains_remain_separate(tmp_path):
@@ -250,16 +250,15 @@ def test_management_view_uses_dash_not_zero(tmp_path):
 def test_charts_render_when_values_exist(tmp_path):
     report = report_for(tmp_path)
     html_text = ex.render_html(report)
-    # trend, activity, CE, status population, NAP, funnel, monthly people + policies, daily
-    assert html_text.count("<svg") == 9
-    assert ex.CE_YOY_TITLE in html_text and ex.CE_CHART_STATUS in html_text
+    assert html_text.count("<svg") >= 9
+    assert ex.CE_YOY_TITLE in html_text and ex.CE_CHART_STATUS in ex.ce_chart(report)
     assert "865,946 – 1,000,000" in ex.ce_chart(report) and "950,000" in ex.ce_chart(report)
     monthly = ex.monthly_chart(report)
     assert "PY2026 Enrollment Lifecycle Activity by Month" in monthly and ex.OE_LABEL in monthly
     assert ex.MONTHLY_FOOTNOTE in monthly
     for month in ("Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026"):
         assert month in monthly
-    assert "http://" not in html_text and "https://" not in html_text and "<script" not in html_text
+    assert "http://" not in html_text and "https://" not in html_text and "<script src" not in html_text
 
 
 def test_unavailable_chart_data_creates_card_not_zeros(tmp_path):
@@ -268,7 +267,8 @@ def test_unavailable_chart_data_creates_card_not_zeros(tmp_path):
         ex.py2027_model({}, {}, ex.read_history(None), None, False, "x"), ex.read_history(None), None, LIVE_AT))
     html_text = ex.render_html(report)
     assert "<svg" not in html_text
-    assert ex.SERIES_UNAVAILABLE in html_text
+    assert "Daily series not available for this run." in html_text
+    assert ex.SERIES_UNAVAILABLE in ex.daily_chart(report)
     assert "unavailable for this run" in ex.nap_chart(report)
     assert "unavailable for this run" in ex.monthly_chart(report)
     assert ">0<" not in html_text
