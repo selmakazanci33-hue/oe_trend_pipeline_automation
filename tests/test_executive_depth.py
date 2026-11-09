@@ -10,7 +10,7 @@ from tests.test_executive_py2026_py2027_report import live_model, report_for
 
 PROJECT = Path(__file__).resolve().parents[1]
 PHASE_8C_SECTIONS = (
-    "Plan Year Overview",
+    "Plan Year Operational Comparison",
     "PY2027 Enrollment Mix",
     "PY2027 Application Funnel",
     "PY2026 Enrollment Activity by Month",
@@ -39,7 +39,7 @@ def _snapshots():
 def test_plan_year_snapshot_shows_both_years_without_a_fake_difference(tmp_path, monkeypatch):
     _quiet(monkeypatch, tmp_path)
     page = executive_part(report_for(tmp_path))
-    snapshot = page.split(eh.SNAPSHOT_TITLE, 1)[1].split(eh.OVERVIEW_TITLE, 1)[0]
+    snapshot = page.split(eh.SNAPSHOT_TITLE, 1)[1].split(eh.COMPARISON_TITLE, 1)[0]
     assert ">PY2026<" in snapshot and ">PY2027<" in snapshot
     assert "Latest Database State" in snapshot and "Current OE Dashboard" in snapshot
     assert "871,095" in snapshot and "950,000" in snapshot and "62.0%" in snapshot
@@ -134,6 +134,47 @@ def test_no_phase_8c_management_section_removed(tmp_path, monkeypatch):
     page = ex.render_html(report_for(tmp_path))
     for title in PHASE_8C_SECTIONS:
         assert f">{title}<" in page
+
+
+def test_operational_comparison_is_local_and_has_no_fake_change(tmp_path, monkeypatch):
+    _quiet(monkeypatch, tmp_path)
+    page = executive_part(report_for(tmp_path))
+    assert "Where each metric is shown" not in page
+    card = page.split(eh.COMPARISON_TITLE, 1)[1].split("<h2", 1)[0]
+    assert eh.COMPARISON_NOTE in card
+    assert "aria-pressed='true'>Enrollment<" in card
+    assert "aria-pressed='false'>Cancellation<" in card
+    assert "871,095" in card and "950,000" in card
+    assert "PY2027 — Not available" in card
+    assert "2,534" not in card and "5,724" not in card
+    assert "78,905" not in card
+    for word in ("increase", "decrease", "winner", "loser"):
+        assert word not in card.lower()
+
+
+def test_status_evolution_selector_keeps_one_chart(tmp_path):
+    model = live_model(tmp_path)
+    model["py2026"]["report"]["dataset_snapshot_population"] = _snapshots()
+    chart = eh.status_evolution_chart(ex.build_report(model))
+    assert chart.count("<svg") == 1
+    assert "aria-pressed='true'>Enrolled<" in chart
+    assert "data-series='Enrolled'" in chart and "data-series='Cancelled'" in chart
+    assert "data-series='May" not in chart
+    enrolled = chart.split("data-series='Enrolled'", 1)[1].split("</g>", 1)[0]
+    cancelled = chart.split("data-series='Cancelled'", 1)[1].split("</g>", 1)[0]
+    assert "display:none" not in enrolled and "display:none" in cancelled
+    assert "May 31" in chart
+    assert chart.count("<circle") == 8
+
+
+def test_trend_explorer_replaces_rather_than_overlays(tmp_path, monkeypatch):
+    _quiet(monkeypatch, tmp_path)
+    page = executive_part(report_for(tmp_path))
+    explorer = page.split(eh.TREND_EXPLORER_TITLE, 1)[1].split("<h2", 1)[0]
+    assert "aria-pressed='true'>Enrollment Population<" in explorer
+    assert "data-metric='cancelled' hidden" in explorer
+    assert eh.POPULATION_TREND_TITLE in explorer and eh.DAILY_POLICY_TITLE in explorer
+    assert explorer.count("<svg") == 2
 
 
 def test_no_acquisition_or_database_work_added():

@@ -1097,7 +1097,8 @@ def _legend(series_names: list[tuple[str, str]], y: int, x: int = 56, dashed: se
 
 
 def line_svg(categories: list[str], series: list[tuple[str, str, dict]], labels: dict | None = None,
-             width: int = 960, height: int = 300, kind: str = "count") -> str:
+             width: int = 960, height: int = 300, kind: str = "count", *,
+             group_series: bool = False, visible: str | None = None) -> str:
     """Lines on one shared 0-based axis. Missing points break the line; nothing is drawn as zero."""
     labels = labels or {}
     left, right, top, bottom = 64, 24, 28, 64
@@ -1119,7 +1120,9 @@ def line_svg(categories: list[str], series: list[tuple[str, str, dict]], labels:
             parts.append(f"<text x='{xs[c]:.1f}' y='{top + plot_h + 18}' text-anchor='middle' class='tick'>"
                          f"{_e(labels.get(c, c))}</text>")
     show_labels = len(categories) <= 16
+    legend_x = left
     for name, color, data in series:
+        chunk: list[str] = []
         run: list[str] = []
         segments = []
         for c in categories:
@@ -1134,15 +1137,24 @@ def line_svg(categories: list[str], series: list[tuple[str, str, dict]], labels:
             segments.append(run)
         for seg in segments:
             if len(seg) > 1:
-                parts.append(f"<polyline points='{' '.join(seg)}' fill='none' stroke='{color}' stroke-width='2.5'/>")
+                chunk.append(f"<polyline points='{' '.join(seg)}' fill='none' stroke='{color}' stroke-width='2.5'/>")
         present = [c for c in categories if data.get(c) is not None]
         for c in present:
             y = top + plot_h - plot_h * data[c] / peak
-            parts.append(f"<circle cx='{xs[c]:.1f}' cy='{y:.1f}' r='3.5' fill='{color}'/>")
+            chunk.append(f"<circle cx='{xs[c]:.1f}' cy='{y:.1f}' r='3.5' fill='{color}'/>")
             if show_labels or c == present[-1]:
                 text = compact(data[c]) if kind == "count" else fmt(data[c], kind)
-                parts.append(f"<text x='{xs[c]:.1f}' y='{y - 8:.1f}' text-anchor='middle' class='dl'>{_e(text)}</text>")
-    parts.append(_legend([(n, c) for n, c, _ in series], height - 22, left))
+                chunk.append(f"<text x='{xs[c]:.1f}' y='{y - 8:.1f}' text-anchor='middle' class='dl'>{_e(text)}</text>")
+        if group_series:
+            hidden = "" if visible in (None, "All", name) else " style='display:none'"
+            chunk.append(f"<rect x='{legend_x}' y='{height - 22}' width='12' height='12' fill='{color}'/>"
+                         f"<text x='{legend_x + 18}' y='{height - 12}' class='lbl'>{_e(name)}</text>")
+            parts.append(f"<g class='series' data-series='{_e(name)}'{hidden}>{''.join(chunk)}</g>")
+            legend_x += 28 + 7 * len(name)
+        else:
+            parts.extend(chunk)
+    if not group_series:
+        parts.append(_legend([(n, c) for n, c, _ in series], height - 22, left))
     return f"<svg viewBox='0 0 {width} {height}' width='100%' role='img'>{''.join(parts)}</svg>"
 
 

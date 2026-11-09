@@ -38,7 +38,7 @@ def test_currently_enrolled_and_effectuated_have_no_numeric_py2026_difference(tm
     assert "865,946" not in ce_cells and "1,000,000" not in ce_cells
     assert "90.0%" not in pe_cells
     page = executive_part(report)
-    assert "Change" not in page.split("Plan Year Overview", 1)[1].split("PY2027 Enrollment Mix", 1)[0]
+    assert "Change" not in page.split(eh.COMPARISON_TITLE, 1)[1].split("PY2027 Enrollment Mix", 1)[0]
 
 
 def test_created_and_confirmed_share_one_monthly_activity_chart(tmp_path):

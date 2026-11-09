@@ -64,6 +64,10 @@ DAILY_POLICY_TITLE = "PY2027 Daily Policy Activity"
 DAILY_POLICY_SUBTITLE = "Cancelled policies by enrollment last-update date"
 APPLICANT_REFERENCE = "Applicant-level reference"
 OVERVIEW_TITLE = "Plan Year Overview"
+COMPARISON_TITLE = "Plan Year Operational Comparison"
+COMPARISON_NOTE = ("Operational comparison only. Metric definitions may differ across plan years; "
+                   "direct YoY change is not calculated.")
+TREND_EXPLORER_TITLE = "PY2027 Trend Explorer"
 SNAPSHOT_TITLE = "Plan Year Operational Snapshot"
 SNAPSHOT_NOTE = ("Plan-year metrics reflect their respective operational definitions; direct YoY differences "
                  "are shown only where definitions align.")
@@ -233,8 +237,13 @@ def status_evolution_chart(report: dict) -> str:
     if not series:
         return ""
     note = "<p class='muted'>An all-zero snapshot was left blank.</p>" if data.get("omitted_dates") else ""
-    svg = ex.line_svg(cats, series, {day: ex.day_label(day) for day in cats})
-    return _card(EVOLUTION_TITLE, svg + note, subtitle=EVOLUTION_SUBTITLE, extra_class="major")
+    buttons = _choice_buttons("status-evolution", (("Enrolled", "Enrolled"), ("Cancelled", "Cancelled"),
+                                                   ("Terminated", "Terminated"), ("Pending", "Pending"),
+                                                   ("All", "All")), "Enrolled", mode="series")
+    svg = ex.line_svg(cats, series, {day: ex.day_label(day) for day in cats},
+                      group_series=True, visible="Enrolled")
+    return _card(EVOLUTION_TITLE, buttons + f"<div id='status-evolution'>{svg}</div>" + note,
+                 subtitle=EVOLUTION_SUBTITLE, extra_class="major")
 
 
 # --- selector charts ---------------------------------------------------------------------------
@@ -305,6 +314,51 @@ def _line_panel(item: dict) -> str:
     if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2027) and any(v is not None for v in item["py2027"]):
         series.append(("PY2027", PY2027_COLOR, dict(zip(cats, item["py2027"]))))
     return ex.line_svg(cats, series, labels)
+
+
+def _choice_buttons(chart_id: str, options: tuple[tuple[str, str], ...], default: str, mode: str = "panel") -> str:
+    buttons = []
+    for key, label in options:
+        selected = key == default
+        cls = "sel on" if selected else "sel"
+        pressed = "true" if selected else "false"
+        buttons.append(f"<button type='button' class='{cls}' data-metric='{_e(key)}' "
+                       f"aria-pressed='{pressed}'>{_e(label)}</button>")
+    return (f"<div class='selector' role='group' data-chart='{chart_id}' data-mode='{mode}'>"
+            f"{''.join(buttons)}</div>")
+
+
+def _side_by_side(py26, py27) -> str:
+    """One chart. A missing value draws no bar and is never shown as zero."""
+    series = (("PY2026", PY2026_COLOR, {"PY2026": py26, "PY2027": None}),
+              ("PY2027", PY2027_COLOR, {"PY2026": None, "PY2027": py27}))
+    svg = ex.grouped_vbar_svg(["PY2026", "PY2027"], series, height=220)
+
+    def _amount(value) -> str:
+        return f"{ex.DASH} Not available" if value is None else ex.fmt(value)
+
+    caption = f"<p class='muted'>PY2026 {_e(_amount(py26))} · PY2027 {_e(_amount(py27))}</p>"
+    return svg + caption
+
+
+def operational_comparison(report: dict) -> str:
+    bars = {b["status"]: b.get("distinct_people") for b in report["py2026_status_population_chart"]["bars"]}
+    snapshot = {r["metric"]: r for r in report["py2027_current_snapshot"]}
+    enrolled = (snapshot.get("Currently Enrolled") or {}).get("value")
+    panels = (
+        ("Enrollment", bars.get("Enrolled"), enrolled),
+        ("Cancellation", bars.get("Cancelled"), None),
+        ("Termination", bars.get("Terminated"), None),
+        ("Pending", bars.get("Pending"), None),
+    )
+    buttons = _choice_buttons("operational-comparison", tuple((key, key) for key, _, _ in panels), "Enrollment")
+    body = []
+    for key, py26, py27 in panels:
+        hidden = "" if key == "Enrollment" else " hidden"
+        body.append(f"<div class='panel' data-metric='{key}'{hidden}>{_side_by_side(py26, py27)}</div>")
+    note = f"<p class='muted'>{_e(COMPARISON_NOTE)}</p>"
+    return _card(COMPARISON_TITLE, buttons + f"<div id='operational-comparison'>{''.join(body)}</div>" + note,
+                 extra_class="major")
 
 
 def plan_year_overview(report: dict) -> str:
@@ -452,6 +506,38 @@ def _policy_strip(present: list) -> str:
             (f"{prefix}Peak day", ex.fmt(peak_value), label(peak_day)),
         ))
     return _strip(cards) if cards else ""
+
+
+def trend_explorer(report: dict) -> str:
+    """One local control. Each button replaces the chart; the two families are never overlaid."""
+    buttons = _choice_buttons("py2027-trend", (("population", "Enrollment Population"),
+                                               ("cancelled", "Cancelled Policies")), "population")
+    population = _population_panel(report)
+    cancelled = _cancelled_policy_panel(report)
+    body = (f"{buttons}<div id='py2027-trend'>"
+            f"<div class='panel' data-metric='population'>{population}</div>"
+            f"<div class='panel' data-metric='cancelled' hidden>{cancelled}</div></div>")
+    return _card(TREND_EXPLORER_TITLE, body, extra_class="major")
+
+
+def _population_panel(report: dict) -> str:
+    item = (report.get("daily_yoy") or {}).get("metrics", {}).get("enrolled")
+    title = "Enrollment Population Trend" if item and item.get("mode") == ex.MODE_YOY else POPULATION_TREND_TITLE
+    if not item or not item.get("selector_enabled"):
+        return f"<h4>{_e(title)}</h4><p class='muted'>No validated Currently Enrolled snapshots yet.</p>"
+    note = "" if item["calendar"] else "<p class='muted'>Shown in observed order; calendar dates were not available.</p>"
+    return (f"<h4>{_e(title)}</h4><div class='sub'>{_e(POPULATION_TREND_SUBTITLE)}</div>"
+            f"{_population_strip(item)}{_line_panel(item)}{note}")
+
+
+def _cancelled_policy_panel(report: dict) -> str:
+    item = ((report.get("daily_yoy") or {}).get("metrics") or {}).get("cancelled")
+    if not item or not item.get("selector_enabled"):
+        return (f"<h4>{_e(DAILY_POLICY_TITLE)}</h4><div class='sub'>{_e(DAILY_POLICY_SUBTITLE)}</div>"
+                "<p class='muted'>Not available</p>")
+    return (f"<h4>{_e(DAILY_POLICY_TITLE)}</h4><div class='sub'>{_e(DAILY_POLICY_SUBTITLE)}</div>"
+            f"{_policy_strip([('cancelled', item)])}{_line_panel(item)}"
+            "<p class='muted'>Separate from enrollment population.</p>")
 
 
 def trend_chart(report: dict) -> str:
@@ -719,7 +805,8 @@ CSS = (
     "h2.group{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#64748b;margin:20px 0 8px;font-weight:700}"
     ".selector{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}"
     ".selector button{border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:4px 12px;cursor:pointer;"
-    "font-size:13px}.selector button.on{background:#2563eb;color:#fff;border-color:#2563eb}"
+    "font-size:13px}.selector button.on,.selector button[aria-pressed='true']{background:#2563eb;color:#fff;"
+    "border-color:#2563eb}.selector button:focus-visible{outline:2px solid #2563eb;outline-offset:2px}"
     ".selector button:disabled{color:#94a3b8;background:#f1f5f9;cursor:not-allowed}"
     ".mtd{background:#f8fafc;border-radius:8px;padding:8px 12px;font-size:12px;color:#334155;margin-top:6px}"
     "svg .lbl{font-size:12px;fill:#334155}svg .val{font-size:13px;font-weight:600;fill:#0f172a}"
@@ -735,9 +822,15 @@ CSS = (
 SELECTOR_JS = (
     "document.querySelectorAll('.selector').forEach(function(group){"
     "var root=document.getElementById(group.getAttribute('data-chart'));if(!root){return;}"
+    "var series=group.getAttribute('data-mode')==='series';"
     "group.querySelectorAll('button.sel').forEach(function(btn){btn.addEventListener('click',function(){"
-    "root.querySelectorAll('.panel').forEach(function(p){p.hidden=p.getAttribute('data-metric')!==btn.getAttribute('data-metric');});"
-    "group.querySelectorAll('button.sel').forEach(function(b){b.classList.toggle('on',b===btn);});});});});"
+    "var metric=btn.getAttribute('data-metric');"
+    "if(series){root.querySelectorAll('g.series').forEach(function(node){"
+    "node.style.display=(metric==='All'||node.getAttribute('data-series')===metric)?'':'none';});}"
+    "else{root.querySelectorAll('.panel').forEach(function(panel){"
+    "panel.hidden=panel.getAttribute('data-metric')!==metric;});}"
+    "group.querySelectorAll('button.sel').forEach(function(other){var on=other===btn;"
+    "other.classList.toggle('on',on);other.setAttribute('aria-pressed',on?'true':'false');});});});});"
 )
 
 
@@ -751,7 +844,7 @@ def executive_body(report: dict) -> str:
         kpis(report),
         plan_year_snapshot(report),
         _group("Plan-Year Operational View"),
-        plan_year_overview(report),
+        operational_comparison(report),
         _group("PY2026 Historical View"),
         status_composition(report),
         status_evolution_chart(report),
@@ -760,8 +853,7 @@ def executive_body(report: dict) -> str:
         funnel_chart(report),
         _group("Trends & Activity"),
         py2026_activity_chart(report),
-        population_trend_chart(report),
-        daily_chart(report),
+        trend_explorer(report),
     ))
 
 
