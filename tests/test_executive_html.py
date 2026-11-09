@@ -190,20 +190,27 @@ def test_daily_supports_two_series_when_compatible(tmp_path):
     assert enrolled["mode"] == ex.MODE_YOY
     assert enrolled["categories"] == ["2026-10-30", "2026-11-01", "2026-11-09"]
     assert enrolled["py2026"] == [None, 700000, 760000]
-    chart = eh.daily_chart(report)
+    chart = eh.population_trend_chart(report)
     panel = [p for p in chart.split("<div class='panel'") if "data-metric='enrolled'" in p][0]
     assert panel.count("<svg") == 1 and ">PY2026<" in panel and ">PY2027<" in panel
-    assert "Currently Enrolled Trend — PY2026 vs PY2027" in panel
+    assert "Enrollment Population Trend — PY2026 vs PY2027" in panel
     assert "<polyline" in panel
+    assert eh.POPULATION_TREND_SUBTITLE in chart
+    assert "daily enrollment events" not in chart.lower()
 
 
 def test_daily_py2027_only_shows_plain_note(tmp_path):
     report = report_for(tmp_path)
-    chart = eh.daily_chart(report)
+    chart = eh.population_trend_chart(report)
     assert ex.PY2026_PENDING in chart and ">PY2026<" not in chart
-    assert "Currently Enrolled Trend — PY2027" in chart
-    assert "PY2026 vs PY2027" not in [line for line in chart.split("<h4>") if "Enrolled" in line][0]
+    assert "Enrollment Population Trend — PY2027" in chart
+    assert "PY2026 vs PY2027" not in chart.split("<h4>", 1)[1].split("</h4>", 1)[0]
     assert "Nov 01" in chart
+    assert eh.POPULATION_TREND_NOTE in chart
+    assert "daily enrollment events" not in executive_part(report).lower()
+    policy = eh.daily_chart(report)
+    assert eh.DAILY_POLICY_TITLE in policy and "data-metric='cancelled'" in policy
+    assert "data-metric='enrolled'" not in policy
 
 
 # --- sections ------------------------------------------------------------------------------
@@ -237,6 +244,15 @@ def test_status_population_groups_other_states(tmp_path):
 def test_nap_mix_footnote(tmp_path):
     chart = eh.nap_chart(report_for(tmp_path))
     assert eh.NAP_TITLE in chart and eh.NAP_FOOTNOTE in chart
+
+
+def test_population_snapshots_are_not_called_daily_enrollment(tmp_path):
+    page = executive_part(report_for(tmp_path))
+    assert eh.POPULATION_TREND_TITLE in page and eh.POPULATION_TREND_SUBTITLE in page
+    assert eh.DAILY_POLICY_TITLE in page
+    assert ">Daily Enrollment<" not in page
+    assert "daily enrolled activity" not in page.lower()
+    assert eh.POPULATION_TREND_NOTE in page
 
 
 def test_management_table_uses_business_labels(tmp_path):

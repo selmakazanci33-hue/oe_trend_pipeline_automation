@@ -82,6 +82,7 @@ from reporting.discovery_report import write_discovery_report
 from reporting.validation_report import format_runtime_value, write_validation_report
 from reporting.formatting import fmt_comparison, fmt_int, fmt_metric_value, fmt_time
 from sisense.discovery import DiscoveryObserver, evaluate_discovery
+from comparison.py2027_enrollment_activity_evidence import write_enrollment_activity_evidence
 from sisense.nap_semantic_capture import write_nap_capture
 from reporting.pipeline import PassiveRunValue, ReportingPipeline, ReportingSummary
 from sisense.retry import RetryPolicy
@@ -581,6 +582,7 @@ def finalize_discovery(
             expected = None
         result = evaluate_discovery(observer, expected)
         write_nap_capture(observer, settings.reports_dir)
+        write_enrollment_activity_evidence(observer, settings.reports_dir)
         metrics = resolve_targets(result)
         counts = {state: sum(m.state == state for m in metrics)
                   for state in (STATE_VERIFIED, STATE_DISCOVERED, STATE_PENDING)}

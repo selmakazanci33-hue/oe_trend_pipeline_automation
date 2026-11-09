@@ -19,7 +19,9 @@ last validated artifact as STALE_FALLBACK, or are UNAVAILABLE.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
+import time
 
 from comparison import executive_py2026_py2027_report as executive
 
@@ -88,28 +90,50 @@ def live_py2027_values(run, completed_at: str) -> tuple[dict, dict]:
     return values, series
 
 
-def refresh_py2027() -> tuple[dict, object | None, object]:
+def _duration(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def print_timing(timing: dict) -> None:
+    print()
+    print("Runtime timing")
+    print(f"{'PY2026 database':<24}{timing['py2026_database']}")
+    print(f"{'PY2027 Sisense':<24}{timing['py2027_sisense']}")
+    print(f"{'History preparation':<24}{timing['history_preparation']}")
+    print(f"{'Comparison model':<24}{timing['comparison_model']}")
+    print(f"{'Report rendering':<24}{timing['report_rendering']}")
+    print(f"{'Total':<24}{timing['total']}")
+
+
+def refresh_py2027(timings: dict | None = None) -> tuple[dict, object | None, object]:
     """(py2027 model, history path, run). Snapshots are saved by the existing pipeline before history is read."""
     import main as pipeline
     from comparison.lifecycle import resolve_history_path
 
     settings, run, reason = None, None, None
+    sisense_started = time.monotonic()
     try:
         settings = sisense_settings()
         run = pipeline.run_pipeline(settings)
     except Exception as exc:
         reason = type(exc).__name__
         logger.error("PY2027 Sisense refresh failed: %s", reason)
+    if timings is not None:
+        timings["py2027_sisense_seconds"] = time.monotonic() - sisense_started
     completed = executive.now_utc()
     live_ok = run is not None and run.exit_code == pipeline.EXIT_OK and run.result is not None
     if run is not None and not live_ok:
         reason = run.failure or f"exit code {run.exit_code}"
+    history_started = time.monotonic()
     history_path = settings.history_db_path if settings is not None and settings.history_db_path else \
         resolve_history_path()
     history = executive.read_history(history_path)
     values, series = live_py2027_values(run if live_ok else None, completed)
     model = executive.py2027_model(values, series, history, executive.load_json(executive.VALIDATION_REPORT),
                                    live_ok, reason)
+    if timings is not None:
+        timings["history_preparation_seconds"] = time.monotonic() - history_started
     return model, history, run
 
 
@@ -140,16 +164,37 @@ def main() -> int:
 
     pipeline.configure_logging()
     generated = executive.now_utc()
+    timings: dict = {}
+    started = time.monotonic()
     logger.info("Step 1/4: live PY2026 database refresh")
+    db_started = time.monotonic()
     py2026 = refresh_py2026()
+    timings["py2026_database_seconds"] = time.monotonic() - db_started
     logger.info("Step 2/4: live PY2027 Sisense refresh and snapshot save")
-    py2027, history, run = refresh_py2027()
+    py2027, history, run = refresh_py2027(timings)
     logger.info("Step 3/4: building the comparison model from this run")
+    model_started = time.monotonic()
     model = executive.build_model(py2026, py2027, history, executive.load_json(executive.PHASE_6D_REPORT), generated)
     report = executive.build_report(model)
+    timings["comparison_model_seconds"] = time.monotonic() - model_started
     logger.info("Step 4/4: writing the executive report")
-    _, html_path = executive.write_report(report)
+    render_started = time.monotonic()
+    json_path, html_path = executive.write_report(report)
+    timings["report_rendering_seconds"] = time.monotonic() - render_started
+    timings["total_seconds"] = time.monotonic() - started
+    timing = {
+        "py2026_database": _duration(timings["py2026_database_seconds"]),
+        "py2027_sisense": _duration(timings.get("py2027_sisense_seconds", 0)),
+        "history_preparation": _duration(timings.get("history_preparation_seconds", 0)),
+        "comparison_model": _duration(timings["comparison_model_seconds"]),
+        "report_rendering": _duration(timings["report_rendering_seconds"]),
+        "total": _duration(timings["total_seconds"]),
+        "seconds": {key: round(value, 3) for key, value in timings.items()},
+    }
+    report["runtime_timing"] = timing
+    json_path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     print_summary(report, html_path, run)
+    print_timing(timing)
     live = py2026["freshness"] == executive.LIVE and py2027["freshness"] == executive.LIVE
     return 0 if live else 1
 

@@ -879,7 +879,7 @@ def daily_yoy(model: dict, cancellation: dict) -> dict:
     metrics = {}
     days = sorted(enrolled27)
     enrolled_family = COMPARABLE if (model.get("py2026") or {}).get("enrolled_history_comparable") else DIAGNOSTIC
-    metrics["enrolled"] = {"label": "Enrolled", "chart_base": "Currently Enrolled Trend", "calendar": True,
+    metrics["enrolled"] = {"label": "Currently Enrolled", "chart_base": "Enrollment Population Trend", "calendar": True,
                            "categories": days, "py2027": [enrolled27[d]["value"] for d in days],
                            "py2026": [(enrolled26.get(shift_plan_year(d)) or {}).get("value") for d in days],
                            "family_status": enrolled_family}

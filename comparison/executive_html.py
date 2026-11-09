@@ -201,48 +201,57 @@ def monthly_chart(report: dict) -> str:
     return _card(title, body, extra_class="major")
 
 
+POPULATION_TREND_TITLE = "Enrollment Population Trend"
+POPULATION_TREND_SUBTITLE = "Validated Currently Enrolled snapshots by report date"
+POPULATION_TREND_NOTE = ("These values are population snapshots captured on successful report runs. "
+                         "They are not daily enrollment events.")
+DAILY_POLICY_TITLE = "Daily Policy Activity"
+
+
+def _line_panel(item: dict) -> str:
+    cats = item["categories"]
+    labels = {c: ex.day_label(c) for c in cats} if item["calendar"] else {}
+    series = []
+    if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2026) and any(v is not None for v in item["py2026"]):
+        series.append(("PY2026", PY2026_COLOR, dict(zip(cats, item["py2026"]))))
+    if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2027) and any(v is not None for v in item["py2027"]):
+        series.append(("PY2027", PY2027_COLOR, dict(zip(cats, item["py2027"]))))
+    return ex.line_svg(cats, series, labels)
+
+
+def population_trend_chart(report: dict) -> str:
+    item = (report.get("daily_yoy") or {}).get("metrics", {}).get("enrolled")
+    if not item or not item.get("selector_enabled"):
+        return _note_card(POPULATION_TREND_TITLE, "No validated Currently Enrolled snapshots yet.")
+    extra = [POPULATION_TREND_NOTE]
+    if not item["calendar"]:
+        extra.append("Shown in observed order; calendar dates were not available.")
+    body = _year_panel("population", "enrolled", item, _line_panel(item), extra, "enrolled")
+    return _card(POPULATION_TREND_TITLE, body, subtitle=POPULATION_TREND_SUBTITLE, extra_class="major")
+
+
 def daily_chart(report: dict) -> str:
-    title = "Daily Enrollment"
+    title = DAILY_POLICY_TITLE
     daily = report["daily_yoy"]
-    if daily["default"] is None:
-        return _note_card(title, "Daily series not available for this run.")
+    metrics = {key: item for key, item in daily["metrics"].items() if key in ("cancelled", "terminated")}
+    default = next((key for key in ("cancelled", "terminated") if metrics.get(key, {}).get("selector_enabled")), None)
+    if default is None:
+        return _note_card(title, "Daily policy activity is not available for this run.")
     panels = []
-    for key, item in daily["metrics"].items():
+    for key, item in metrics.items():
         if not item["selector_enabled"]:
             continue
-        cats = item["categories"]
-        labels = {c: ex.day_label(c) for c in cats} if item["calendar"] else {}
-        series = []
-        if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2026) and any(v is not None for v in item["py2026"]):
-            series.append(("PY2026", PY2026_COLOR, dict(zip(cats, item["py2026"]))))
-        if item["mode"] in (ex.MODE_YOY, ex.MODE_PY2027) and any(v is not None for v in item["py2027"]):
-            series.append(("PY2027", PY2027_COLOR, dict(zip(cats, item["py2027"]))))
-        svg = ex.line_svg(cats, series, labels)
-        extra = []
+        extra = ["Daily dashboard last-update activity; not compared with PY2026 status counts."]
         if not item["calendar"]:
             extra.append("Shown in observed order; calendar dates were not available.")
-        if key in ("cancelled", "terminated"):
-            extra.append("Daily dashboard activity; not compared with PY2026 status counts.")
-        panels.append(_year_panel("daily", key, item, svg, extra, daily["default"]))
-    body = _selector("daily", daily["metrics"], daily["default"]) + f"<div id='daily'>{''.join(panels)}</div>"
+        panels.append(_year_panel("daily", key, item, _line_panel(item), extra, default))
+    body = _selector("daily", metrics, default) + f"<div id='daily'>{''.join(panels)}</div>"
     return _card(title, body, extra_class="major")
 
 
 def trend_chart(report: dict) -> str:
-    title = "Currently Enrolled — PY2027 trend"
-    trend = report["same_period"]["currently_enrolled_trend"]
-    rows = trend["rows"]
-    if not rows:
-        return _note_card(title, "The PY2027 trend starts after the first validated observation.")
-    cats = [r["py2027_date"] for r in rows]
-    series = [("PY2027", PY2027_COLOR, {r["py2027_date"]: r["py2027_value"] for r in rows})]
-    if trend["py2026_available"]:
-        series.append(("PY2026 (same date last year)", PY2026_COLOR, {r["py2027_date"]: r["py2026_value"] for r in rows}))
-    latest = FRESHNESS_LABELS.get(rows[-1]["py2027_freshness"], "Not available")
-    note = "" if trend["py2026_available"] else f" {ex.PY2026_PENDING}"
-    body = (ex.line_svg(cats, series, {d: ex.day_label(d) for d in cats})
-            + f"<p class='muted'>Latest point: {_e(latest)}.{_e(note)} The trend grows with each successful run.</p>")
-    return _card(title, body, subtitle="PY2027 trend")
+    """Same snapshot family as the population-trend card; kept for tests that call it directly."""
+    return population_trend_chart(report)
 
 
 def activity_chart(report: dict) -> str:
@@ -504,7 +513,7 @@ def executive_body(report: dict) -> str:
     return "".join((
         kpis(report),
         f"<h2 class='major'>{_e(ex.SAME_PERIOD_TITLE)}</h2>",
-        monthly_chart(report), daily_chart(report), trend_chart(report), activity_chart(report),
+        monthly_chart(report), population_trend_chart(report), daily_chart(report), activity_chart(report),
         "<h2>Currently Enrolled comparison</h2>", ce_chart(report), same_date_table(report),
         "<h2>PY2026 Status Population</h2>", status_population(report),
         "<h2>PY2027 Enrollment Mix</h2>", nap_chart(report),

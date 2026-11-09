@@ -1,5 +1,6 @@
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -98,9 +99,24 @@ def test_summary_is_concise_and_safe(isolated, monkeypatch, capsys):
     monkeypatch.setattr(runner, "refresh_py2026", lambda: ex.py2026_live({"currently_enrolled_candidates": []}, NOW))
     assert runner.main() == 0
     out = capsys.readouterr().out
-    lines = {line.split()[0] + " " + line.split()[1]: line for line in out.splitlines() if len(line.split()) >= 3}
+    summary = out.split("Runtime timing", 1)[0]
+    lines = {line.split()[0] + " " + line.split()[1]: line for line in summary.splitlines() if len(line.split()) >= 3}
     assert lines["PY2026 DB"].split()[-1] == "LIVE_THIS_RUN"
     assert lines["PY2027 Sisense"].split()[-1] == "LIVE_THIS_RUN"
     assert "950,000" in out and "Executive report" in out
     assert "{" not in out and "cookie" not in out.lower() and "token" not in out.lower()
     assert (isolated / "executive" / ex.HTML_NAME).is_file()
+    assert "Runtime timing" in out and "PY2026 database" in out and "Total" in out
+    payload = (isolated / "executive" / ex.JSON_NAME).read_text(encoding="utf-8")
+    assert '"runtime_timing"' in payload
+    html_text = (isolated / "executive" / ex.HTML_NAME).read_text(encoding="utf-8")
+    assert "Runtime timing" not in html_text.split("<h1>", 1)[-1].split("Technical details", 1)[0]
+
+
+def test_timing_uses_existing_stages_and_adds_no_acquisition_calls():
+    text = (Path(__file__).resolve().parents[1] / "comparison" / "live_executive_runner.py").read_text(encoding="utf-8")
+    assert "time.monotonic" in text
+    assert text.count("run_pipeline(") == 1
+    assert text.count(".retrieve_live(") == 1
+    assert "read_history(" in text and "build_report(" in text and "write_report(" in text
+    assert "wait_for_timeout" not in text and "browser.new_page" not in text

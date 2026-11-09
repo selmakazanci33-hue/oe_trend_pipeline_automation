@@ -52,10 +52,12 @@ def test_one_year_chart_never_titled_as_vs(tmp_path):
     assert "Monthly Enrollment Created — PY2026" in monthly
     assert "Monthly Enrollment Confirmation — PY2026" in monthly
     assert ex.PY2027_PENDING in monthly
+    trend = eh.population_trend_chart(report_for(tmp_path))
+    assert "Enrollment Population Trend — PY2027" in trend
     daily = eh.daily_chart(report_for(tmp_path))
-    assert "Currently Enrolled Trend — PY2027" in daily
     assert "Daily Cancelled Policies — PY2027" in daily
     assert "PY2026 vs PY2027" not in daily
+    assert "data-metric='enrolled'" not in daily
     assert "Monthly Enrollment Comparison — PY2026 vs PY2027" not in page
     assert "Daily Enrollment Comparison — PY2026 vs PY2027" not in page
 
@@ -93,10 +95,10 @@ def test_daily_two_year_values_are_two_lines(tmp_path):
         {"date": "2025-10-30", "distinct_people": 650000},
         {"date": "2025-11-01", "distinct_people": 700000},
         {"date": "2025-11-09", "distinct_people": 760000}]
-    panel = [p for p in eh.daily_chart(ex.build_report(model)).split("<div class='panel'")
+    panel = [p for p in eh.population_trend_chart(ex.build_report(model)).split("<div class='panel'")
              if "data-metric='enrolled'" in p][0]
     assert panel.count("<polyline") == 2
-    assert "Currently Enrolled Trend — PY2026 vs PY2027" in panel
+    assert "Enrollment Population Trend — PY2026 vs PY2027" in panel
 
 
 def test_future_null_months_remain_blank(tmp_path):
