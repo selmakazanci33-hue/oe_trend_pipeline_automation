@@ -32,14 +32,21 @@ def test_currently_enrolled_difference_blank_until_definition_selected(tmp_path)
     table = eh.same_date_table(report) + eh.management_table(report)
     assert "Definition alignment in progress" in table
     assert "-68,184" not in table and "+68,184" not in table
+    overview = eh.plan_year_overview(report)
+    assert eh.ALIGNMENT_TEXT in overview and eh.CE_CONTEXT in overview
+    assert "-68,184" not in overview and "pp" not in overview
 
 
 def test_effectuated_difference_blank_until_alignment_proven(tmp_path):
     report = report_for(tmp_path)
     row = next(r for r in report["same_date_table"] if r["metric"] == "% Effectuated")
-    assert row["difference"] == ex.DASH and "across candidate definitions" in row["py2026"]
+    assert row["difference"] == ex.DASH
     view = next(r for r in report["management_view"] if r["metric"] == "% Effectuated")
-    assert view["change"] == ex.DASH and "across candidate definitions" in view["py2026"]
+    assert view["change"] == ex.DASH
+    overview = eh.plan_year_overview(report)
+    assert eh.ALIGNMENT_TEXT in overview
+    assert "62.0%" in overview
+    assert "90.0%" not in overview.split("% Effectuated", 1)[1].split("Enrolled Population", 1)[0]
 
 
 def test_one_year_chart_never_titled_as_vs(tmp_path):
@@ -48,14 +55,12 @@ def test_one_year_chart_never_titled_as_vs(tmp_path):
         title = heading.split("</h4>", 1)[0]
         if " vs " in title:
             raise AssertionError(f"one-year panel titled as comparison: {title}")
-    monthly = eh.monthly_chart(report_for(tmp_path))
-    assert "Monthly Enrollment Created — PY2026" in monthly
-    assert "Monthly Enrollment Confirmation — PY2026" in monthly
-    assert ex.PY2027_PENDING in monthly
+    activity = eh.py2026_activity_chart(report_for(tmp_path))
+    assert eh.ACTIVITY_TITLE in activity and ">Created<" in activity and ">Confirmed<" in activity
     trend = eh.population_trend_chart(report_for(tmp_path))
-    assert "Enrollment Population Trend — PY2027" in trend
+    assert eh.POPULATION_TREND_TITLE in trend
     daily = eh.daily_chart(report_for(tmp_path))
-    assert "Daily Cancelled Policies — PY2027" in daily
+    assert eh.DAILY_POLICY_TITLE in daily
     assert "PY2026 vs PY2027" not in daily
     assert "data-metric='enrolled'" not in daily
     assert "Monthly Enrollment Comparison — PY2026 vs PY2027" not in page
@@ -95,10 +100,10 @@ def test_daily_two_year_values_are_two_lines(tmp_path):
         {"date": "2025-10-30", "distinct_people": 650000},
         {"date": "2025-11-01", "distinct_people": 700000},
         {"date": "2025-11-09", "distinct_people": 760000}]
-    panel = [p for p in eh.population_trend_chart(ex.build_report(model)).split("<div class='panel'")
-             if "data-metric='enrolled'" in p][0]
-    assert panel.count("<polyline") == 2
-    assert "Enrollment Population Trend — PY2026 vs PY2027" in panel
+    chart = eh.population_trend_chart(ex.build_report(model))
+    assert chart.count("<polyline") == 2
+    assert ">PY2026<" in chart and ">PY2027<" in chart
+    assert "PY2026 vs PY2027" not in chart
 
 
 def test_future_null_months_remain_blank(tmp_path):
@@ -113,9 +118,9 @@ def test_incompatible_families_never_produce_two_series_chart(tmp_path):
         assert report["monthly_yoy"]["metrics"][key]["yoy_enabled"] is False
         assert report["daily_yoy"]["metrics"][key]["yoy_enabled"] is False
     cancelled = eh.daily_chart(report)
-    panel = [p for p in cancelled.split("<div class='panel'") if "data-metric='cancelled'" in p]
-    assert panel and ">PY2026<" not in panel[0]
-    assert "Daily Cancelled Policies — PY2026 vs PY2027" not in cancelled
+    assert ">PY2026<" not in cancelled
+    assert "PY2026 vs PY2027" not in cancelled
+    assert eh.DAILY_POLICY_TITLE in cancelled
 
 
 def test_ce_scenarios_remain_in_technical_details(tmp_path):

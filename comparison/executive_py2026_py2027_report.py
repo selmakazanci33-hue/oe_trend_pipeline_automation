@@ -78,9 +78,9 @@ CE_ALIGNMENT_SUBTITLE = "Definition alignment in progress"
 CE_FOOTNOTE_EXECUTIVE = ("PY2026 values are exact database results under different candidate filter definitions. "
                          "They are not estimates. The equivalent definition to the PY2027 dashboard metric has not "
                          "yet been confirmed.")
-CE_TECHNICAL_NOTE = ("Each CE scenario is an exact COUNT(DISTINCT enrollee_id) result from dbo.Enrollments_TEST "
-                     "under a different candidate translation of the Sisense filter semantics. No scenario is "
-                     "currently promoted as the official PY2026 equivalent of Sisense Currently Enrolled.")
+CE_TECHNICAL_NOTE = ("Each value is an exact COUNT(DISTINCT enrollee_id) database result under a different "
+                     "candidate translation of the PY2027 dashboard definition. No scenario is currently "
+                     "promoted as the official PY2026 equivalent of Sisense Currently Enrolled.")
 ALIGNMENT = "DEFINITION_ALIGNMENT_IN_PROGRESS"
 CLOSEST_LABEL = "Closest diagnostic scenario — not selected as official"
 TREND_TITLE = "Currently Enrolled — Same-Cutoff Trend (validated snapshots)"

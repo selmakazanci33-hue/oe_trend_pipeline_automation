@@ -200,11 +200,9 @@ def test_comparison_charts_preserve_semantic_status(tmp_path):
 
 def test_layout_order(tmp_path):
     html_text = ex.render_html(report_for(tmp_path))
-    order = [ex.SAME_PERIOD_TITLE, "Monthly Enrollment", "Enrollment Population Trend", "Daily Policy Activity",
-             "Currently Enrolled comparison",
-             "Same-Date Comparison", "PY2026 Status Population", "PY2027 Enrollment Mix", "PY2027 Application Funnel",
-             "PY2026 Monthly Enrollment Lifecycle Activity", "PY2027 Cancellation / Termination Daily Activity",
-             "Management View", "Technical details"]
+    order = ["Plan Year Overview", "PY2027 Enrollment Mix", "PY2027 Application Funnel",
+             "PY2026 Enrollment Activity by Month", "PY2027 Enrollment Population Trend",
+             "PY2027 Daily Policy Activity", "Technical details"]
     positions = [html_text.index(f">{title}<") for title in order]
     assert positions == sorted(positions)
     assert html_text.index("class='kpis'") < positions[0]

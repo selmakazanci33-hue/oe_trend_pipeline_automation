@@ -81,7 +81,7 @@ def test_header_is_simple_and_iso_free(tmp_path):
     page = ex.render_html(report_for(tmp_path))
     head = page.split("<main>", 1)[0].split("<body>", 1)[1]
     text = visible(head)
-    assert "PY2026 vs PY2027 Enrollment Comparison" in text
+    assert "Enrollment Dashboard" in text
     assert "Report as of: Nov 9, 2026 · 12:00 PM UTC" in text
     assert "PY2026 Database · Current" in " ".join(text.split())
     assert "PY2027 Dashboard · Current" in " ".join(text.split())
@@ -191,25 +191,23 @@ def test_daily_supports_two_series_when_compatible(tmp_path):
     assert enrolled["categories"] == ["2026-10-30", "2026-11-01", "2026-11-09"]
     assert enrolled["py2026"] == [None, 700000, 760000]
     chart = eh.population_trend_chart(report)
-    panel = [p for p in chart.split("<div class='panel'") if "data-metric='enrolled'" in p][0]
-    assert panel.count("<svg") == 1 and ">PY2026<" in panel and ">PY2027<" in panel
-    assert "Enrollment Population Trend — PY2026 vs PY2027" in panel
-    assert "<polyline" in panel
+    assert chart.count("<svg") == 1 and ">PY2026<" in chart and ">PY2027<" in chart
+    assert "PY2026 vs PY2027" not in chart
+    assert "<polyline" in chart
     assert eh.POPULATION_TREND_SUBTITLE in chart
-    assert "daily enrollment events" not in chart.lower()
+    assert "daily enrollment" not in chart.lower()
 
 
 def test_daily_py2027_only_shows_plain_note(tmp_path):
     report = report_for(tmp_path)
     chart = eh.population_trend_chart(report)
-    assert ex.PY2026_PENDING in chart and ">PY2026<" not in chart
-    assert "Enrollment Population Trend — PY2027" in chart
-    assert "PY2026 vs PY2027" not in chart.split("<h4>", 1)[1].split("</h4>", 1)[0]
+    assert eh.POPULATION_TREND_NOTE in chart and ">PY2026<" not in chart
+    assert eh.POPULATION_TREND_TITLE in chart
+    assert "PY2026 vs PY2027" not in chart
     assert "Nov 01" in chart
-    assert eh.POPULATION_TREND_NOTE in chart
-    assert "daily enrollment events" not in executive_part(report).lower()
+    assert "daily enrollment" not in executive_part(report).lower()
     policy = eh.daily_chart(report)
-    assert eh.DAILY_POLICY_TITLE in policy and "data-metric='cancelled'" in policy
+    assert eh.DAILY_POLICY_TITLE in policy and "Cancelled" in policy
     assert "data-metric='enrolled'" not in policy
 
 
@@ -229,7 +227,7 @@ def test_funnel_uses_friendly_freshness(tmp_path):
     values = {k: v for k, v in LIVE_VALUES.items() if k not in ("applications_started", "submitted_applications")}
     chart = eh.funnel_chart(report_for(tmp_path, values=values))
     assert chart.count("Last validated · Nov 1, 12:00 PM UTC") == 2
-    assert "Reference metric — applicant grain" in chart and "VALIDATION_ONLY" not in chart
+    assert eh.APPLICANT_REFERENCE in chart and "VALIDATION_ONLY" not in chart
 
 
 def test_status_population_groups_other_states(tmp_path):
@@ -252,6 +250,7 @@ def test_population_snapshots_are_not_called_daily_enrollment(tmp_path):
     assert eh.DAILY_POLICY_TITLE in page
     assert ">Daily Enrollment<" not in page
     assert "daily enrolled activity" not in page.lower()
+    assert "daily enrollment activity" not in page.lower()
     assert eh.POPULATION_TREND_NOTE in page
 
 

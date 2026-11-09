@@ -252,8 +252,8 @@ def test_management_view_uses_dash_not_zero(tmp_path):
 def test_charts_render_when_values_exist(tmp_path):
     report = report_for(tmp_path)
     html_text = ex.render_html(report)
-    assert html_text.count("<svg") >= 9
-    assert ex.CE_YOY_TITLE in html_text and ex.CE_CHART_STATUS in ex.ce_chart(report)
+    assert html_text.count("<svg") >= 4
+    assert ex.CE_CHART_STATUS in ex.ce_chart(report)
     assert "865,946 – 1,000,000" in ex.ce_chart(report) and "950,000" in ex.ce_chart(report)
     monthly = ex.monthly_chart(report)
     assert "PY2026 Enrollment Lifecycle Activity by Month" in monthly and ex.OE_LABEL in monthly
@@ -269,7 +269,7 @@ def test_unavailable_chart_data_creates_card_not_zeros(tmp_path):
         ex.py2027_model({}, {}, ex.read_history(None), None, False, "x"), ex.read_history(None), None, LIVE_AT))
     html_text = ex.render_html(report)
     assert "<svg" not in html_text
-    assert "Daily series not available for this run." in html_text
+    assert "not available" in html_text.lower()
     assert ex.SERIES_UNAVAILABLE in ex.daily_chart(report)
     assert "unavailable for this run" in ex.nap_chart(report)
     assert "unavailable for this run" in ex.monthly_chart(report)
