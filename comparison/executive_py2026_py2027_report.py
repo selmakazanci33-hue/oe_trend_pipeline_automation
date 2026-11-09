@@ -30,6 +30,11 @@ REPORTS_DIR = OUTPUT_DIR.parent
 EXECUTIVE_DIR = REPORTS_DIR / "executive"
 JSON_NAME = "py2026_vs_py2027_comparison.json"
 HTML_NAME = "py2026_vs_py2027_comparison.html"
+MONTHLY_POPULATION_REPORT = OUTPUT_DIR / "py2026_monthly_population.json"
+ACTIVITY_EVIDENCE_REPORT = OUTPUT_DIR / "py2027_enrollment_activity_evidence.json"
+EVOLUTION_LABELS = ("Enrolled", "Cancelled", "Terminated", "Pending")
+EVOLUTION_KEYS = {"Enrolled": "enrolled_people", "Cancelled": "cancelled_people",
+                  "Terminated": "terminated_people", "Pending": "pending_people"}
 PHASE_6B_REPORT = OUTPUT_DIR / "py2026_population_diagnostics.json"
 PHASE_6D_REPORT = OUTPUT_DIR / "nap_semantic_capture.json"
 VALIDATION_REPORT = REPORTS_DIR / "validation" / "wave1_runtime_validation.json"
@@ -900,6 +905,53 @@ def daily_yoy(model: dict, cancellation: dict) -> dict:
     return {"metrics": metrics, "default": default}
 
 
+def _evolution_values(row: dict) -> dict:
+    return {label: row.get(label, row.get(EVOLUTION_KEYS[label])) for label in EVOLUTION_LABELS}
+
+
+def anomalous_all_zero(values: dict) -> bool:
+    """An all-zero status snapshot is unavailable, not a genuine population of zero."""
+    nums = [values.get(label) for label in EVOLUTION_LABELS]
+    return all(value is not None and value == 0 for value in nums)
+
+
+def status_evolution_series(rows: list | None) -> dict:
+    """Shape already-known snapshot rows. No query and no interpolated values."""
+    points, omitted = [], []
+    for row in rows or []:
+        day = row.get("snapshot_date") or row.get("date")
+        if not day:
+            continue
+        values = _evolution_values(row)
+        if anomalous_all_zero(values):
+            omitted.append(day)
+            values = {label: None for label in EVOLUTION_LABELS}
+        points.append({"date": day, **values})
+    available = any(point[label] is not None for point in points for label in EVOLUTION_LABELS)
+    return {"available": available, "points": points if available else [], "omitted_dates": omitted,
+            "subtitle": "Historical latest-state snapshots"}
+
+
+def existing_status_snapshots(model: dict) -> list:
+    """Rows already on the model, otherwise the existing monthly-population artifact. No database read."""
+    report = (model.get("py2026") or {}).get("report") or {}
+    rows = report.get("dataset_snapshot_population") or report.get("py2026_status_evolution") or []
+    if rows:
+        return rows
+    artifact = load_json(MONTHLY_POPULATION_REPORT)
+    if not isinstance(artifact, dict):
+        return []
+    return artifact.get("dataset_snapshot_population") or []
+
+
+def existing_phase_8b_summary() -> dict | None:
+    """Decision already written by Phase 8B. Not a new observation."""
+    payload = load_json(ACTIVITY_EVIDENCE_REPORT)
+    if not isinstance(payload, dict):
+        return None
+    return {"final_decision": payload.get("final_decision"), "summary": payload.get("summary")}
+
+
 def build_report(model: dict) -> dict:
     population = population_comparison(model)
     range_ = ce_range(model)
@@ -944,6 +996,8 @@ def build_report(model: dict) -> dict:
         "py2027_status_population": {"available": False, "message": PY2027_STATUS_POP_UNAVAILABLE},
         "population_comparison": population,
         "py2026_status_populations": status_populations(model),
+        "py2026_status_evolution": status_evolution_series(existing_status_snapshots(model)),
+        "phase_8b_evidence": existing_phase_8b_summary(),
         "py2027_current_snapshot": py2027_snapshot(model),
         "new_active_passive": nap,
         "oe_temporal_diagnostic": temporal,

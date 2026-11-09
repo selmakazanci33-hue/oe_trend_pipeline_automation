@@ -61,6 +61,15 @@ POPULATION_TREND_NOTE = "PY2026 equivalent historical population series is not a
 DAILY_POLICY_TITLE = "PY2027 Daily Policy Activity"
 APPLICANT_REFERENCE = "Applicant-level reference"
 OVERVIEW_TITLE = "Plan Year Overview"
+SNAPSHOT_TITLE = "Plan Year Snapshot"
+SNAPSHOT_NOTE = ("Plan-year definitions differ; values are shown for operational context and are not a direct "
+                 "YoY calculation.")
+SNAPSHOT_CONTEXT = "Operational context. Definitions differ. Direct YoY calculation not applied."
+COMPOSITION_TITLE = "PY2026 Enrollment Status Composition"
+EVOLUTION_TITLE = "PY2026 Enrollment Status Evolution"
+EVOLUTION_SUBTITLE = "Historical latest-state snapshots"
+OBSERVED_CHANGE = "Change in observed population"
+STATUS_COLORS = {"Enrolled": "#0d9488", "Cancelled": "#d97706", "Terminated": "#dc2626", "Pending": "#64748b"}
 
 
 def _e(value) -> str:
@@ -153,6 +162,79 @@ def kpis(report: dict) -> str:
         cards.append(f"<div class='kpi'><div class='k'>{_e(k['label'])}</div>"
                      f"<div class='v'>{_e(value)}</div>{secondary}</div>")
     return f"<div class='kpis'>{''.join(cards)}</div>"
+
+
+def _strip(cards: list[tuple[str, str, str]]) -> str:
+    body = "".join(f"<div class='mini'><div class='k'>{_e(label)}</div><div class='v'>{_e(value)}</div>"
+                   f"<div class='m'>{_e(note)}</div></div>" for label, value, note in cards)
+    return f"<div class='strip'>{body}</div>"
+
+
+def _stat_rows(rows: list[tuple[str, str]]) -> str:
+    return "".join(f"<div class='stat'><span>{_e(label)}</span><b>{_e(value)}</b></div>" for label, value in rows)
+
+
+def _panel(heading: str, subtitle: str, rows: list[tuple[str, str]], footnote: str) -> str:
+    return (f"<div class='year'><h4>{_e(heading)}</h4><div class='sub'>{_e(subtitle)}</div>"
+            f"{_stat_rows(rows)}<p class='muted'>{_e(footnote)}</p></div>")
+
+
+def plan_year_snapshot(report: dict) -> str:
+    bars = {b["status"]: b.get("distinct_people") for b in report["py2026_status_population_chart"]["bars"]}
+    snapshot = {r["metric"]: r for r in report["py2027_current_snapshot"]}
+
+    def db_count(status: str) -> str:
+        people = bars.get(status)
+        return ex.DASH if people is None else ex.fmt(people)
+
+    def dashboard_value(metric: str, kind: str = "count") -> str:
+        item = snapshot.get(metric)
+        if item is None or item.get("value") is None:
+            return ex.DASH
+        return ex.fmt(item["value"], kind)
+
+    left = _panel("PY2026", "Latest Database State",
+                  [(status, db_count(status)) for status in ex.STATUS_ORDER], POP_CONTEXT)
+    right = _panel("PY2027", "Current OE Dashboard", [
+        ("Currently Enrolled", dashboard_value("Currently Enrolled")),
+        ("% Effectuated", dashboard_value("% Effectuated", "ratio")),
+        ("New", dashboard_value("New")),
+        ("Active", dashboard_value("Active")),
+        ("Passive", dashboard_value("Passive")),
+    ], "Dashboard value")
+    note = f"<p class='muted'>{_e(SNAPSHOT_NOTE)}</p><p class='muted'>{_e(SNAPSHOT_CONTEXT)}</p>"
+    return _card(SNAPSHOT_TITLE, f"<div class='split'>{left}{right}</div>{note}", extra_class="major")
+
+
+def status_composition(report: dict) -> str:
+    data = report["py2026_status_population_chart"]
+    main = [b for b in data["bars"] if b["status"] in ex.STATUS_ORDER and b["distinct_people"] is not None]
+    if not main:
+        return _note_card(COMPOSITION_TITLE, "PY2026 status counts are not available for this report.")
+    body = ex.hbar_svg([(b["status"], b["distinct_people"], STATUS_COLORS[b["status"]]) for b in main])
+    body += "<p class='muted'>Exact database count. Distinct people · latest database state.</p>"
+    return _card(COMPOSITION_TITLE, body, subtitle="Latest database state")
+
+
+def status_evolution_chart(report: dict) -> str:
+    data = report.get("py2026_status_evolution") or {}
+    points = data.get("points") or []
+    if not data.get("available") or not points:
+        return ""
+    cats = [point["date"] for point in points]
+    series = []
+    for label in ex.EVOLUTION_LABELS:
+        values = {point["date"]: point.get(label) for point in points}
+        if any(value is not None for value in values.values()):
+            series.append((label, STATUS_COLORS[label], values))
+    if not series:
+        return ""
+    note = "Each point is the latest-state population captured by that historical snapshot."
+    if data.get("omitted_dates"):
+        note += " An all-zero snapshot was left blank."
+    svg = ex.line_svg(cats, series, {day: ex.day_label(day) for day in cats})
+    return _card(EVOLUTION_TITLE, svg + f"<p class='muted'>{_e(note)}</p>", subtitle=EVOLUTION_SUBTITLE,
+                 extra_class="major")
 
 
 # --- selector charts ---------------------------------------------------------------------------
@@ -266,6 +348,15 @@ def py2026_activity_chart(report: dict) -> str:
     axis = sorted(months)
     if not axis or not series:
         return _note_card(ACTIVITY_TITLE, "Monthly enrollment activity is not available for this report.")
+    by_name = {label: data for label, _, data in series}
+    cards = []
+    for label in ("Created", "Confirmed"):
+        present = [(month, value) for month, value in by_name.get(label, {}).items() if value is not None]
+        if present:
+            month, value = max(present, key=lambda item: (item[1], item[0]))
+            cards.append((f"Peak {label} Month", ex.month_label(month), ex.fmt(value)))
+    cards.append(("Latest Available Month", ex.month_label(axis[-1]), ""))
+    insight = _activity_insight(by_name)
     svg = ex.grouped_vbar_svg(axis, series, labels={m: ex.month_label(m) for m in axis})
     fields = (report.get("same_period") or {}).get("activity", {}).get("py2026") or {}
     cumul = []
@@ -279,7 +370,24 @@ def py2026_activity_chart(report: dict) -> str:
         cats = sorted({d for _, _, data in cumul for d in data})
         extra = (f"<details class='inner'><summary>Cumulative activity by date</summary>"
                  f"{ex.line_svg(cats, cumul, {d: ex.day_label(d) for d in cats})}</details>")
-    return _card(ACTIVITY_TITLE, svg + f"<p class='muted'>{_e(ACTIVITY_NOTE)}</p>" + extra, extra_class="major")
+    insight_html = f"<p class='insight'>{_e(insight)}</p>" if insight else ""
+    return _card(ACTIVITY_TITLE, _strip(cards) + svg + insight_html + f"<p class='muted'>{_e(ACTIVITY_NOTE)}</p>" + extra,
+                 extra_class="major")
+
+
+def _activity_insight(by_name: dict) -> str | None:
+    created, confirmed = by_name.get("Created") or {}, by_name.get("Confirmed") or {}
+    gaps = []
+    for month in set(created) & set(confirmed):
+        left, right = created.get(month), confirmed.get(month)
+        if left is None or right is None:
+            continue
+        gaps.append((abs(left - right), month, left, right))
+    if not gaps:
+        return None
+    gap, month, left, right = max(gaps)
+    higher = "Created" if left >= right else "Confirmed"
+    return (f"Largest Created–Confirmed gap is {ex.month_label(month)}: {higher} is higher by {ex.fmt(gap)}.")
 
 
 def population_trend_chart(report: dict) -> str:
@@ -293,7 +401,22 @@ def population_trend_chart(report: dict) -> str:
     if not item["calendar"]:
         notes.append("Shown in observed order; calendar dates were not available.")
     note = f"<p class='muted'>{_e(' '.join(notes))}</p>" if notes else ""
-    return _card(title, _line_panel(item) + note, subtitle=POPULATION_TREND_SUBTITLE, extra_class="major")
+    return _card(title, _population_strip(item) + _line_panel(item) + note, subtitle=POPULATION_TREND_SUBTITLE,
+                 extra_class="major")
+
+
+def _population_strip(item: dict) -> str:
+    pairs = [(category, value) for category, value in zip(item["categories"], item["py2027"]) if value is not None]
+    if not pairs:
+        return ""
+    label = ex.day_label if item.get("calendar") else str
+    first_day, first_value = pairs[0]
+    latest_day, latest_value = pairs[-1]
+    cards = [("Latest Currently Enrolled", ex.fmt(latest_value), label(latest_day)),
+             ("First Observed", ex.fmt(first_value), label(first_day))]
+    if len(pairs) >= 2:
+        cards.append((OBSERVED_CHANGE, f"{latest_value - first_value:+,}", "Validated snapshots"))
+    return _strip(cards)
 
 
 def daily_chart(report: dict) -> str:
@@ -302,6 +425,7 @@ def daily_chart(report: dict) -> str:
                if key in ("cancelled", "terminated") and item.get("selector_enabled")]
     if not present:
         return _note_card(DAILY_POLICY_TITLE, "Daily policy activity is not available for this run.")
+    summary = _policy_strip(present)
     if len(present) == 1:
         svg = _line_panel(present[0][1])
     else:
@@ -317,7 +441,26 @@ def daily_chart(report: dict) -> str:
     note = "Policy status updates by day. Separate from enrollment population."
     if missing:
         note += " " + ", ".join(missing) + ": not available this run."
-    return _card(DAILY_POLICY_TITLE, svg + f"<p class='muted'>{_e(note)}</p>", extra_class="major")
+    return _card(DAILY_POLICY_TITLE, summary + svg + f"<p class='muted'>{_e(note)}</p>", extra_class="major")
+
+
+def _policy_strip(present: list) -> str:
+    cards = []
+    for _, item in present:
+        pairs = [(category, value) for category, value in zip(item["categories"], item.get("py2027") or [])
+                 if value is not None]
+        if not pairs:
+            continue
+        label = ex.day_label if item.get("calendar") else str
+        latest_day, latest_value = pairs[-1]
+        peak_day, peak_value = max(pairs, key=lambda pair: (pair[1], pair[0]))
+        name = item["label"]
+        cards.extend((
+            (f"{name} Latest Day", ex.fmt(latest_value), label(latest_day)),
+            (f"{name} Period Total", ex.fmt(sum(value for _, value in pairs)), f"{len(pairs)} days"),
+            (f"{name} Peak Day", ex.fmt(peak_value), label(peak_day)),
+        ))
+    return _strip(cards) if cards else ""
 
 
 def trend_chart(report: dict) -> str:
@@ -399,10 +542,18 @@ def nap_chart(report: dict) -> str:
     if not items:
         return _note_card(NAP_TITLE, "The PY2027 enrollment mix is not available for this report.")
     now = report["executive_summary"]["data_refreshed"]
+    values = [item["value"] for _, item in nap.items()]
+    total = sum(values) if values and all(value is not None for value in values) else None
+    labelled = []
+    for (label, item), color in zip(nap.items(), ("#0d9488", PY2027_COLOR, PY2026_COLOR)):
+        if item["value"] is None:
+            continue
+        text = label if not total else f"{label} · {item['value'] / total * 100:.1f}%"
+        labelled.append((text, item["value"], color))
     notes = " ".join(f"{_e(label)}: {freshness_note(item, now)}"
                      for label, item in nap.items() if item["freshness"] != ex.LIVE)
     note = f"<p class='muted'>{notes}</p>" if notes else ""
-    return _card(NAP_TITLE, ex.hbar_svg(items) + note, subtitle=_e(NAP_FOOTNOTE))
+    return _card(NAP_TITLE, ex.hbar_svg(labelled) + note, subtitle=_e(NAP_FOOTNOTE))
 
 
 def funnel_chart(report: dict) -> str:
@@ -517,7 +668,8 @@ def management_table(report: dict) -> str:
 # --- technical details -------------------------------------------------------------------------
 
 TECHNICAL_KEYS = ("executive_summary", "py2027_current_snapshot", "currently_enrolled_range", "closest_scenario",
-                  "population_comparison", "py2026_status_populations", "new_active_passive", "applications",
+                  "population_comparison", "py2026_status_populations", "py2026_status_evolution", "phase_8b_evidence",
+                  "new_active_passive", "applications",
                   "cancellation_termination", "same_period", "monthly_yoy", "daily_yoy", "comparison_quality_matrix",
                   "history_summary", "key_findings", "caveats", "production_comparable", "report_kind", "phase")
 
@@ -529,11 +681,17 @@ def technical_details(report: dict) -> str:
     scenarios = "".join(f"<li>{_e(s['candidate_id'])}: {_e(ex.fmt(s['distinct_people']))} — {_e(s['description'])}</li>"
                         for s in report["currently_enrolled_range"]["scenarios"])
     dump = json.dumps({k: report.get(k) for k in TECHNICAL_KEYS}, indent=2, default=str)
+    evidence = report.get("phase_8b_evidence") or {}
+    evidence_html = ""
+    if evidence:
+        evidence_html = ("<h4>Phase 8B enrollment activity evidence</h4>"
+                         f"<p>{_e(evidence.get('final_decision'))} · {_e(evidence.get('summary'))}</p>")
     return (f"<details id='{TECHNICAL_ID}' class='tech'><summary>Technical details</summary>"
             "<h4>PY2027 metric provenance</h4><table class='grid'><tr><th>Metric</th><th>Freshness</th>"
             f"<th>Retrieved (UTC)</th><th>Source</th><th>Verification</th></tr>{rows}</table>"
             f"<h4>PY2026 Currently Enrolled scenarios (CE1–CE4)</h4><p>{_e(ex.CE_TECHNICAL_NOTE)}</p>"
             f"<ul>{scenarios or '<li>None</li>'}</ul>"
+            f"{evidence_html}"
             f"<p>production_comparable = {_e(report['production_comparable'])}</p>"
             f"<h4>Caveats</h4><ul>{''.join(f'<li>{_e(c)}</li>' for c in report['caveats'])}</ul>"
             f"<h4>Report data (JSON)</h4><pre>{_e(dump)}</pre></details>")
@@ -547,7 +705,15 @@ CSS = (
     "header .org{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#64748b}"
     "header h1{margin:4px 0 6px;font-size:24px}.asof{font-size:14px;color:#334155}"
     ".sources{display:flex;gap:18px;margin-top:8px;font-size:12px;color:#475569}"
-    "main{padding:20px 32px;max-width:1200px;margin:0 auto}"
+    "main{padding:20px 32px;max-width:1280px;margin:0 auto}"
+    ".split{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:800px){.split{grid-template-columns:1fr}}"
+    ".year{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px}"
+    ".year h4{margin:0 0 2px;font-size:15px}"
+    ".stat{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #e2e8f0}"
+    ".stat b{font-size:16px}"
+    ".strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:4px 0 10px}"
+    ".mini{background:#f8fafc;border-radius:8px;padding:8px 10px}.mini .v{font-size:16px;font-weight:700;margin:2px 0}"
+    ".insight{margin:8px 0;font-size:13px;color:#334155}"
     ".kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:18px}"
     ".kpi{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px}"
     ".k{font-size:12px;color:#64748b;text-transform:uppercase}.kpi .v{font-size:28px;font-weight:700;margin:4px 0}"
@@ -587,10 +753,13 @@ SELECTOR_JS = (
 def executive_body(report: dict) -> str:
     return "".join((
         kpis(report),
+        plan_year_snapshot(report),
         plan_year_overview(report),
+        status_composition(report),
+        status_evolution_chart(report),
+        py2026_activity_chart(report),
         nap_chart(report),
         funnel_chart(report),
-        py2026_activity_chart(report),
         population_trend_chart(report),
         daily_chart(report),
     ))
